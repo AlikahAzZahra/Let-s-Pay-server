@@ -226,6 +226,7 @@ connectToDatabase();
 app.use(cors({
     origin: [
         'https://let-s-pay-jm5o.vercel.app',
+        'https://let-s-pay-server.vercel.app',
         'https://api.midtrans.com',
         'https://api.sandbox.midtrans.com'
     ],
