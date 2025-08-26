@@ -223,25 +223,86 @@ connectToDatabase();
 // =====================================================
 // MIDDLEWARE - ENHANCED CORS
 // =====================================================
-app.use(cors({
-    origin: [
-        'https://let-s-pay-jm5o.vercel.app',
-        'https://let-s-pay-server.vercel.app',
-        'https://api.midtrans.com',
-        'https://api.sandbox.midtrans.com'
-    ],
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        const allowedOrigins = [
+            'https://let-s-pay-jm5o.vercel.app',
+            'https://let-s-pay-server.vercel.app', 
+            'https://api.midtrans.com',
+            'https://api.sandbox.midtrans.com',
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:8080'
+        ];
+        
+        // Check if origin is allowed
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.log('CORS blocked origin:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
-        'Authorization',
+        'Authorization', 
         'Cache-Control',
         'Pragma',
         'Accept',
         'Origin',
-        'X-Requested-With'
-    ]
-}));
+        'X-Requested-With',
+        'Access-Control-Allow-Origin'
+    ],
+    exposedHeaders: [
+        'Access-Control-Allow-Origin',
+        'Access-Control-Allow-Credentials'
+    ],
+    optionsSuccessStatus: 200 // Support legacy browsers
+};
+
+// Apply CORS with explicit preflight handling
+app.use(cors(corsOptions));
+
+// Explicit preflight handler for complex requests
+app.options('*', cors(corsOptions));
+
+// Manual CORS headers as fallback (tambahkan setelah app.use(cors))
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const allowedOrigins = [
+        'https://let-s-pay-jm5o.vercel.app',
+        'https://let-s-pay-server.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:5173'
+    ];
+    
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader(
+        'Access-Control-Allow-Methods', 
+        'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+    );
+    res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma'
+    );
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(204);
+        return;
+    }
+    
+    next();
+});
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
