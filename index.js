@@ -235,7 +235,8 @@ const corsOptions = {
             'https://api.sandbox.midtrans.com',
             'http://localhost:3000',
             'http://localhost:5173',
-            'http://localhost:8080'
+            'http://localhost:8080',
+            "*"
         ];
         
         // Check if origin is allowed
