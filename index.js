@@ -1614,35 +1614,39 @@ app.post('/api/midtrans/webhook/notification', async (req, res) => {
 // =====================================================
 // START SERVER
 // =====================================================
-app.listen(PORT, () => {
-    console.log('='.repeat(60));
-    console.log('🚀 SERVER STARTED SUCCESSFULLY! (COMPLETELY FIXED VERSION)');
-    console.log('='.repeat(60));
-    console.log(`🌐 Server running at: http://localhost:${PORT}`);
-    console.log(`🔑 JWT Secret configured: ${JWT_SECRET ? 'YES' : 'NO'}`);
-    console.log(`💳 Midtrans Mode: ${process.env.MIDTRANS_IS_PRODUCTION === 'true' ? 'PRODUCTION' : 'SANDBOX'}`);
-    console.log(`📊 Database Type: ${process.env.DB_TYPE || 'mysql'}`);
-    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log('='.repeat(60));
-    console.log('📋 Available Endpoints:');
-    console.log('  • POST /api/login');
-    console.log('  • GET  /api/health');
-    console.log('  • GET  /api/debug/test-simple');
-    console.log('  • GET  /api/debug/schema'); 
-    console.log('  • POST /api/debug/order');
-    console.log('  • GET  /api/menu (boolean-safe)');
-    console.log('  • PATCH /api/menu/:id/availability (boolean-safe)');
-    console.log('  • GET  /api/orders');
-    console.log('  • POST /api/orders (COMPLETELY FIXED - safe table lookup)');
-    console.log('  • GET  /api/tables'); 
-    console.log('  • GET  /api/reports/sales');
-    console.log('  • GET  /api/debug/menu/:id (boolean-safe)');
-    console.log('='.repeat(60));
-    console.log('🔧 KEY FIXES APPLIED:');
-    console.log('  ✅ Safe table lookup function with string handling');
-    console.log('  ✅ Boolean-safe menu availability checks');
-    console.log('  ✅ Type-safe order creation');
-    console.log('  ✅ Enhanced error logging');
-    console.log('  ✅ Debug endpoints for troubleshooting');
-    console.log('='.repeat(60));
-});
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+    app.listen(PORT, () => {
+        console.log('='.repeat(60));
+        console.log('🚀 SERVER STARTED SUCCESSFULLY! (COMPLETELY FIXED VERSION)');
+        console.log('='.repeat(60));
+        console.log(`🌐 Server running at: http://localhost:${PORT}`);
+        console.log(`🔑 JWT Secret configured: ${JWT_SECRET ? 'YES' : 'NO'}`);
+        console.log(`💳 Midtrans Mode: ${process.env.MIDTRANS_IS_PRODUCTION === 'true' ? 'PRODUCTION' : 'SANDBOX'}`);
+        console.log(`📊 Database Type: ${process.env.DB_TYPE || 'mysql'}`);
+        console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log('='.repeat(60));
+        console.log('📋 Available Endpoints:');
+        console.log('  • POST /api/login');
+        console.log('  • GET  /api/health');
+        console.log('  • GET  /api/debug/test-simple');
+        console.log('  • GET  /api/debug/schema'); 
+        console.log('  • POST /api/debug/order');
+        console.log('  • GET  /api/menu (boolean-safe)');
+        console.log('  • PATCH /api/menu/:id/availability (boolean-safe)');
+        console.log('  • GET  /api/orders');
+        console.log('  • POST /api/orders (COMPLETELY FIXED - safe table lookup)');
+        console.log('  • GET  /api/tables'); 
+        console.log('  • GET  /api/reports/sales');
+        console.log('  • GET  /api/debug/menu/:id (boolean-safe)');
+        console.log('='.repeat(60));
+        console.log('🔧 KEY FIXES APPLIED:');
+        console.log('  ✅ Safe table lookup function with string handling');
+        console.log('  ✅ Boolean-safe menu availability checks');
+        console.log('  ✅ Type-safe order creation');
+        console.log('  ✅ Enhanced error logging');
+        console.log('  ✅ Debug endpoints for troubleshooting');
+        console.log('='.repeat(60));
+    });
+}
