@@ -13,7 +13,7 @@ const midtransClient = require('midtrans-client');
 const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT;
 
 const JWT_SECRET = process.env.JWT_SECRET || 'verysecretkeythatshouldbeprotected';
 
@@ -225,11 +225,7 @@ connectToDatabase();
 // =====================================================
 app.use(cors({
     origin: [
-        'http://localhost:3000',
-        'http://localhost:5173',
-        'http://localhost:4173',
-        'http://127.0.0.1:5173',
-        'http://127.0.0.1:3000',
+        'https://let-s-pay-jm5o.vercel.app',
         'https://api.midtrans.com',
         'https://api.sandbox.midtrans.com'
     ],
