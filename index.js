@@ -38,6 +38,39 @@ const normalizeAvailability = (is_available) => {
     return isMenuAvailable(is_available) ? 1 : 0;
 };
 
+const saveBase64Image = async (base64Data, imageType) => {
+    const uploadsDir = path.join(__dirname, 'uploads');
+    
+    // Create uploads directory if not exists
+    if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    
+    // Validate image type
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+    if (!validTypes.includes(imageType)) {
+        throw new Error('Format gambar tidak didukung. Gunakan JPG, PNG, WebP, atau GIF.');
+    }
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const extension = imageType.split('/')[1];
+    const filename = `menu_${timestamp}.${extension}`;
+    const filePath = path.join(uploadsDir, filename);
+    
+    // Convert base64 to buffer
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+    
+    // Check file size (max 5MB)
+    if (imageBuffer.length > 5 * 1024 * 1024) {
+        throw new Error('Ukuran gambar terlalu besar. Maksimal 5MB.');
+    }
+    
+    // Save file
+    fs.writeFileSync(filePath, imageBuffer);
+    return `/uploads/${filename}`;
+};
+
 // CRITICAL FIX: Safe table lookup function
 const safeTableLookup = async (tableNumber) => {
     console.log('🔍 Safe table lookup for:', tableNumber, typeof tableNumber);
@@ -199,6 +232,273 @@ class PaymentUtils {
         }
     }
 }
+
+async function handleJsonMenuUpload(req, res) {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa menambah menu.' });
+        }
+        
+        const { name, description, price, category, image_base64, image_type } = req.body;
+        
+        console.log('Handling JSON menu upload:', { name, price, category, hasImage: !!image_base64 });
+        
+        if (!name || !price || !category) {
+            return res.status(400).json({ message: 'Nama, harga, dan kategori menu harus diisi.' });
+        }
+        
+        if (isNaN(parseFloat(price))) {
+            return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
+        }
+        
+        let image_url = null;
+        
+        // Process base64 image if provided
+        if (image_base64 && image_type) {
+            try {
+                image_url = await saveBase64Image(image_base64, image_type);
+                console.log('Base64 image saved:', image_url);
+            } catch (imageError) {
+                console.error('Error saving base64 image:', imageError);
+                return res.status(400).json({ message: imageError.message });
+            }
+        }
+        
+        // Insert to database
+        const [result] = await dbAdapter.execute(
+            'INSERT INTO menu_items (name, description, price, category, image_url, is_available) VALUES (?, ?, ?, ?, ?, ?)',
+            [name, description || null, parseFloat(price), category, image_url, 1]
+        );
+        
+        const newMenuItem = {
+            id_menu: result.insertId,
+            name,
+            description: description || '',
+            price: parseFloat(price),
+            category,
+            image_url: image_url || null,
+            is_available: 1
+        };
+        
+        console.log('Menu baru berhasil ditambahkan (JSON):', newMenuItem);
+        res.status(201).json({ message: 'Menu berhasil ditambahkan!', menu: newMenuItem });
+        
+    } catch (err) {
+        console.error('Error adding menu (JSON):', err);
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'Menu dengan nama ini sudah ada.' });
+        }
+        res.status(500).json({ message: 'Gagal menambahkan menu ke database: ' + err.message });
+    }
+}
+
+// Handler untuk FormData menu upload (yang sudah ada)
+async function handleFormDataMenuUpload(req, res) {
+    if (req.user.role !== 'admin') {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa menambah menu.' });
+    }
+    
+    const { name, description, price, category } = req.body;
+    const image_url = req.file ? `/uploads/${req.file.filename}` : null;
+    
+    console.log('Handling FormData menu upload:', { name, price, category, hasFile: !!req.file });
+    
+    if (!name || !price || !category) {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(400).json({ message: 'Nama, harga, dan kategori menu harus diisi.' });
+    }
+    
+    if (isNaN(parseFloat(price))) {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
+    }
+    
+    try {
+        const [result] = await dbAdapter.execute(
+            'INSERT INTO menu_items (name, description, price, category, image_url, is_available) VALUES (?, ?, ?, ?, ?, ?)',
+            [name, description || null, parseFloat(price), category, image_url, 1]
+        );
+        
+        const newMenuItem = {
+            id_menu: result.insertId,
+            name,
+            description: description || '',
+            price: parseFloat(price),
+            category,
+            image_url: image_url || null,
+            is_available: 1
+        };
+        
+        console.log('Menu baru berhasil ditambahkan (FormData):', newMenuItem);
+        res.status(201).json({ message: 'Menu berhasil ditambahkan!', menu: newMenuItem });
+        
+    } catch (err) {
+        console.error('Error adding menu (FormData):', err);
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: 'Menu dengan nama ini sudah ada.' });
+        }
+        res.status(500).json({ message: 'Gagal menambahkan menu ke database: ' + err.message });
+    }
+}
+
+// Handler untuk JSON menu update
+async function handleJsonMenuUpdate(req, res) {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa mengupdate menu.' });
+        }
+        
+        const { id_menu } = req.params;
+        const { name, description, price, category, is_available, image_base64, image_type, image_url_existing } = req.body;
+        
+        console.log('Updating menu (JSON):', id_menu, { name, price, category, hasNewImage: !!image_base64 });
+        
+        if (!name || !price || !category) {
+            return res.status(400).json({ message: 'Nama, harga, dan kategori menu tidak boleh kosong untuk update.' });
+        }
+        
+        if (isNaN(parseFloat(price))) {
+            return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
+        }
+        
+        // Get old image for cleanup
+        let oldImageUrl = null;
+        const [rows] = await dbAdapter.execute('SELECT image_url FROM menu_items WHERE id_menu = ?', [id_menu]);
+        if (rows[0] && rows[0].image_url && rows[0].image_url.startsWith('/uploads/')) {
+            oldImageUrl = path.join(__dirname, rows[0].image_url);
+        }
+        
+        let image_url = image_url_existing || rows[0]?.image_url || null;
+        
+        // Process new base64 image if provided
+        if (image_base64 && image_type) {
+            try {
+                image_url = await saveBase64Image(image_base64, image_type);
+                console.log('New base64 image saved:', image_url);
+                
+                // Clean up old image
+                if (oldImageUrl && fs.existsSync(oldImageUrl)) {
+                    fs.unlinkSync(oldImageUrl);
+                    console.log('Old image deleted:', oldImageUrl);
+                }
+            } catch (imageError) {
+                console.error('Error saving new base64 image:', imageError);
+                return res.status(400).json({ message: imageError.message });
+            }
+        }
+        
+        const normalizedAvailability = normalizeAvailability(is_available);
+        
+        const [result] = await dbAdapter.execute(
+            'UPDATE menu_items SET name = ?, description = ?, price = ?, category = ?, image_url = ?, is_available = ? WHERE id_menu = ?',
+            [name, description || null, parseFloat(price), category, image_url, normalizedAvailability, id_menu]
+        );
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Menu tidak ditemukan.' });
+        }
+        
+        console.log(`Menu dengan ID ${id_menu} berhasil diupdate (JSON).`);
+        res.json({ message: 'Menu berhasil diupdate!' });
+        
+    } catch (err) {
+        console.error('Error updating menu (JSON):', err);
+        res.status(500).json({ message: 'Gagal mengupdate menu di database: ' + err.message });
+    }
+}
+
+// Handler untuk FormData menu update (yang sudah ada)
+async function handleFormDataMenuUpdate(req, res) {
+    if (req.user.role !== 'admin') {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa mengupdate menu.' });
+    }
+    
+    const { id_menu } = req.params;
+    const { name, description, price, category, is_available } = req.body;
+    let image_url = req.body.image_url_existing;
+    
+    console.log('Updating menu (FormData):', id_menu, { name, price, category, hasFile: !!req.file });
+    
+    if (req.file) {
+        image_url = `/uploads/${req.file.filename}`;
+    } else if (req.body.clear_image === 'true') {
+        image_url = null;
+    }
+    
+    if (!name || !price || !category) {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(400).json({ message: 'Nama, harga, dan kategori menu tidak boleh kosong untuk update.' });
+    }
+    
+    if (isNaN(parseFloat(price))) {
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
+    }
+    
+    try {
+        // Get old image for cleanup
+        let oldImageUrl = null;
+        const [rows] = await dbAdapter.execute('SELECT image_url FROM menu_items WHERE id_menu = ?', [id_menu]);
+        if (rows[0] && rows[0].image_url && rows[0].image_url.startsWith('/uploads/')) {
+            oldImageUrl = path.join(__dirname, rows[0].image_url);
+        }
+        
+        const normalizedAvailability = normalizeAvailability(is_available);
+        
+        const [result] = await dbAdapter.execute(
+            'UPDATE menu_items SET name = ?, description = ?, price = ?, category = ?, image_url = ?, is_available = ? WHERE id_menu = ?',
+            [name, description || null, parseFloat(price), category, image_url, normalizedAvailability, id_menu]
+        );
+        
+        if (result.affectedRows === 0) {
+            if (req.file) { fs.unlinkSync(req.file.path); }
+            return res.status(404).json({ message: 'Menu tidak ditemukan.' });
+        }
+        
+        // Clean up old image
+        if (oldImageUrl && fs.existsSync(oldImageUrl) && oldImageUrl !== path.join(__dirname, image_url || '')) {
+            fs.unlinkSync(oldImageUrl);
+            console.log('Old image deleted:', oldImageUrl);
+        }
+        
+        console.log(`Menu dengan ID ${id_menu} berhasil diupdate (FormData).`);
+        res.json({ message: 'Menu berhasil diupdate!' });
+        
+    } catch (err) {
+        console.error('Error updating menu (FormData):', err);
+        if (req.file) { fs.unlinkSync(req.file.path); }
+        res.status(500).json({ message: 'Gagal mengupdate menu di database: ' + err.message });
+    }
+}
+
+// REPLACE EXISTING MENU ROUTES dengan yang ini:
+
+// FIXED POST API untuk menambah menu - support both FormData dan JSON
+app.post('/api/menu', authenticateToken, (req, res, next) => {
+    // Check content type to determine how to process
+    const contentType = req.get('Content-Type');
+    
+    console.log('POST /api/menu called with Content-Type:', contentType);
+    
+    if (contentType && contentType.includes('application/json')) {
+        // Handle JSON with base64 image
+        console.log('Processing as JSON request');
+        handleJsonMenuUpload(req, res);
+    } else {
+        // Handle FormData with multer
+        console.log('Processing as FormData request');
+        upload.single('image')(req, res, (err) => {
+            if (err) {
+                console.error('Multer error:', err);
+                return res.status(400).json({ message: 'Error uploading file: ' + err.message });
+            }
+            handleFormDataMenuUpload(req, res);
+        });
+    }
+});
 
 // =====================================================
 // DATABASE CONNECTION - FIXED
@@ -731,114 +1031,48 @@ app.patch('/api/menu/:id_menu/availability', authenticateToken, async (req, res)
 });
 
 // Rest of menu endpoints with safe availability checks
-app.post('/api/menu', authenticateToken, upload.single('image'), async (req, res) => {
-    if (req.user.role !== 'admin') {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa menambah menu.' });
-    }
+app.post('/api/menu', authenticateToken, (req, res, next) => {
+    // Check content type to determine how to process
+    const contentType = req.get('Content-Type');
     
-    const { name, description, price, category } = req.body;
-    const image_url = req.file ? `/uploads/${req.file.filename}` : null;
+    console.log('POST /api/menu called with Content-Type:', contentType);
     
-    if (!name || !price || !category) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(400).json({ message: 'Nama, harga, dan kategori menu harus diisi.' });
-    }
-    
-    if (isNaN(parseFloat(price))) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
-    }
-    
-    try {
-        const [result] = await dbAdapter.execute(
-            'INSERT INTO menu_items (name, description, price, category, image_url, is_available) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, description || null, parseFloat(price), category, image_url, 1]
-        );
-        
-        const newMenuItem = {
-            id_menu: result.insertId,
-            name,
-            description: description || '',
-            price: parseFloat(price),
-            category,
-            image_url: image_url || 'https://placehold.co/150x150/CCCCCC/000000?text=No+Image',
-            is_available: 1
-        };
-        
-        console.log('Menu baru berhasil ditambahkan:', newMenuItem);
-        res.status(201).json({ message: 'Menu berhasil ditambahkan!', menu: newMenuItem });
-        
-    } catch (err) {
-        console.error('Error adding menu:', err);
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        if (err.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ message: 'Menu dengan nama ini sudah ada.' });
-        }
-        res.status(500).json({ message: 'Gagal menambahkan menu ke database.' });
+    if (contentType && contentType.includes('application/json')) {
+        // Handle JSON with base64 image
+        console.log('Processing as JSON request');
+        handleJsonMenuUpload(req, res);
+    } else {
+        // Handle FormData with multer
+        console.log('Processing as FormData request');
+        upload.single('image')(req, res, (err) => {
+            if (err) {
+                console.error('Multer error:', err);
+                return res.status(400).json({ message: 'Error uploading file: ' + err.message });
+            }
+            handleFormDataMenuUpload(req, res);
+        });
     }
 });
 
-app.put('/api/menu/:id_menu', authenticateToken, upload.single('image'), async (req, res) => {
-    if (req.user.role !== 'admin') {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa mengupdate menu.' });
-    }
+app.put('/api/menu/:id_menu', authenticateToken, (req, res, next) => {
+    const contentType = req.get('Content-Type');
     
-    const { id_menu } = req.params;
-    const { name, description, price, category, is_available } = req.body;
-    let image_url = req.body.image_url_existing;
+    console.log('PUT /api/menu/:id_menu called with Content-Type:', contentType);
     
-    if (req.file) {
-        image_url = `/uploads/${req.file.filename}`;
-    } else if (req.body.clear_image === 'true') {
-        image_url = null;
-    }
-    
-    if (!name || !price || !category || is_available === undefined) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(400).json({ message: 'Nama, harga, kategori, dan ketersediaan menu tidak boleh kosong untuk update.' });
-    }
-    
-    if (isNaN(parseFloat(price))) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
-    }
-    
-    try {
-        // Get old image for cleanup
-        let oldImageUrl = null;
-        const [rows] = await dbAdapter.execute('SELECT image_url FROM menu_items WHERE id_menu = ?', [id_menu]);
-        if (rows[0] && rows[0].image_url && rows[0].image_url.startsWith('/uploads/')) {
-            oldImageUrl = path.join(__dirname, rows[0].image_url);
-        }
-        
-        // FIXED: Use safe availability normalization
-        const normalizedAvailability = normalizeAvailability(is_available);
-        
-        const [result] = await dbAdapter.execute(
-            'UPDATE menu_items SET name = ?, description = ?, price = ?, category = ?, image_url = ?, is_available = ? WHERE id_menu = ?',
-            [name, description || null, parseFloat(price), category, image_url, normalizedAvailability, id_menu]
-        );
-        
-        if (result.affectedRows === 0) {
-            if (req.file) { fs.unlinkSync(req.file.path); }
-            return res.status(404).json({ message: 'Menu tidak ditemukan.' });
-        }
-        
-        // Clean up old image
-        if (oldImageUrl && fs.existsSync(oldImageUrl) && oldImageUrl !== path.join(__dirname, image_url || '')) {
-            fs.unlinkSync(oldImageUrl);
-            console.log('Old image deleted:', oldImageUrl);
-        }
-        
-        console.log(`Menu dengan ID ${id_menu} berhasil diupdate.`);
-        res.json({ message: 'Menu berhasil diupdate!' });
-        
-    } catch (err) {
-        console.error('Error updating menu:', err);
-        if (req.file) { fs.unlinkSync(req.file.path); }
-        res.status(500).json({ message: 'Gagal mengupdate menu di database.' });
+    if (contentType && contentType.includes('application/json')) {
+        // Handle JSON with base64 image
+        console.log('Processing update as JSON request');
+        handleJsonMenuUpdate(req, res);
+    } else {
+        // Handle FormData with multer
+        console.log('Processing update as FormData request');
+        upload.single('image')(req, res, (err) => {
+            if (err) {
+                console.error('Multer error:', err);
+                return res.status(400).json({ message: 'Error uploading file: ' + err.message });
+            }
+            handleFormDataMenuUpdate(req, res);
+        });
     }
 });
 
