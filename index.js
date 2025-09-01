@@ -1,4 +1,4 @@
-// lets-pay/server/index.js - COMPLETE FIXED VERSION
+// lets-pay/server/index.js - COMPLETE FIXED VERSION (IMAGE VIA LINK ONLY)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -6,9 +6,8 @@ const bodyParser = require('body-parser');
 const dbAdapter = require('./database/adapter');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
+// ⛔ Multer & fs upload logic dihapus sesuai instruksi
 const path = require('path');
-const fs = require('fs');
 const midtransClient = require('midtrans-client');
 const crypto = require('crypto');
 
@@ -38,7 +37,34 @@ const normalizeAvailability = (is_available) => {
     return isMenuAvailable(is_available) ? 1 : 0;
 };
 
+// ==== IMAGE LINK HELPERS (untuk input URL gambar) ====
+const isValidHttpUrl = (value) => {
+  try {
+    const u = new URL(String(value));
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
 
+// Ubah link Google Drive agar direct-view (bukan halaman HTML)
+const toDirectGoogleDrive = (url) => {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('drive.google.com')) {
+      // Format 1: https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+      const m = u.pathname.match(/\/file\/d\/([^/]+)/);
+      const idFromPath = m && m[1];
+      // Format 2: https://drive.google.com/open?id=FILE_ID
+      const idFromQuery = u.searchParams.get('id');
+      const fileId = idFromPath || idFromQuery;
+      if (fileId) return `https://drive.google.com/uc?export=view&id=${fileId}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+};
 
 // CRITICAL FIX: Safe table lookup function
 const safeTableLookup = async (tableNumber) => {
@@ -271,36 +297,7 @@ app.options('*', cors(corsOptions));
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// Multer configuration
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, 'uploads');
-        if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath);
-        }
-        cb(null, uploadPath);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`);
-    }
-});
-
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const filetypes = /jpeg|jpg|png|gif/;
-        const mimetype = filetypes.test(file.mimetype);
-        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-
-        if (mimetype && extname) {
-            return cb(null, true);
-        }
-        cb(new Error('Hanya file gambar (jpeg, jpg, png, gif) yang diizinkan!'));
-    }
-});
+// ⛔ Static '/uploads' dihapus karena tidak lagi menyimpan file lokal
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -733,22 +730,25 @@ app.patch('/api/menu/:id_menu/availability', authenticateToken, async (req, res)
 });
 
 // Rest of menu endpoints with safe availability checks
-app.post('/api/menu', authenticateToken, upload.single('image'), async (req, res) => {
+// ⛔ upload.single('image') DIHAPUS — sekarang pakai image_link saja
+app.post('/api/menu', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa menambah menu.' });
     }
     
     const { name, description, price, category } = req.body;
-    const image_url = req.file ? `/uploads/${req.file.filename}` : null;
-    
+    const rawLink = (req.body.image_link || '').trim();
+    let image_url = null;
+
+    if (rawLink && isValidHttpUrl(rawLink)) {
+        image_url = toDirectGoogleDrive(rawLink);
+    }
+
     if (!name || !price || !category) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(400).json({ message: 'Nama, harga, dan kategori menu harus diisi.' });
     }
     
     if (isNaN(parseFloat(price))) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
     }
     
@@ -773,7 +773,6 @@ app.post('/api/menu', authenticateToken, upload.single('image'), async (req, res
         
     } catch (err) {
         console.error('Error adding menu:', err);
-        if (req.file) { fs.unlinkSync(req.file.path); }
         if (err.code === 'ER_DUP_ENTRY') {
             return res.status(409).json({ message: 'Menu dengan nama ini sudah ada.' });
         }
@@ -781,40 +780,33 @@ app.post('/api/menu', authenticateToken, upload.single('image'), async (req, res
     }
 });
 
-app.put('/api/menu/:id_menu', authenticateToken, upload.single('image'), async (req, res) => {
+app.put('/api/menu/:id_menu', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(403).json({ message: 'Akses ditolak. Hanya admin yang bisa mengupdate menu.' });
     }
     
     const { id_menu } = req.params;
     const { name, description, price, category, is_available } = req.body;
-    let image_url = req.body.image_url_existing;
-    
-    if (req.file) {
-        image_url = `/uploads/${req.file.filename}`;
-    } else if (req.body.clear_image === 'true') {
+
+    let image_url = req.body.image_url_existing || null;
+    const rawLink = (req.body.image_link || '').trim();
+    const clearImage = req.body.clear_image === 'true';
+
+    if (clearImage) {
         image_url = null;
+    } else if (rawLink && isValidHttpUrl(rawLink)) {
+        image_url = toDirectGoogleDrive(rawLink);
     }
-    
+
     if (!name || !price || !category || is_available === undefined) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(400).json({ message: 'Nama, harga, kategori, dan ketersediaan menu tidak boleh kosong untuk update.' });
     }
     
     if (isNaN(parseFloat(price))) {
-        if (req.file) { fs.unlinkSync(req.file.path); }
         return res.status(400).json({ message: 'Harga harus berupa angka yang valid.' });
     }
     
     try {
-        // Get old image for cleanup
-        let oldImageUrl = null;
-        const [rows] = await dbAdapter.execute('SELECT image_url FROM menu_items WHERE id_menu = ?', [id_menu]);
-        if (rows[0] && rows[0].image_url && rows[0].image_url.startsWith('/uploads/')) {
-            oldImageUrl = path.join(__dirname, rows[0].image_url);
-        }
-        
         // FIXED: Use safe availability normalization
         const normalizedAvailability = normalizeAvailability(is_available);
         
@@ -823,15 +815,8 @@ app.put('/api/menu/:id_menu', authenticateToken, upload.single('image'), async (
             [name, description || null, parseFloat(price), category, image_url, normalizedAvailability, id_menu]
         );
         
-        if (result.affectedRows === 0) {
-            if (req.file) { fs.unlinkSync(req.file.path); }
+        if ((result?.affectedRows ?? result?.rowCount ?? 0) === 0) {
             return res.status(404).json({ message: 'Menu tidak ditemukan.' });
-        }
-        
-        // Clean up old image
-        if (oldImageUrl && fs.existsSync(oldImageUrl) && oldImageUrl !== path.join(__dirname, image_url || '')) {
-            fs.unlinkSync(oldImageUrl);
-            console.log('Old image deleted:', oldImageUrl);
         }
         
         console.log(`Menu dengan ID ${id_menu} berhasil diupdate.`);
@@ -839,7 +824,6 @@ app.put('/api/menu/:id_menu', authenticateToken, upload.single('image'), async (
         
     } catch (err) {
         console.error('Error updating menu:', err);
-        if (req.file) { fs.unlinkSync(req.file.path); }
         res.status(500).json({ message: 'Gagal mengupdate menu di database.' });
     }
 });
@@ -852,23 +836,10 @@ app.delete('/api/menu/:id_menu', authenticateToken, async (req, res) => {
     const { id_menu } = req.params;
     
     try {
-        // Get image for cleanup
-        let imageUrlToDelete = null;
-        const [rows] = await dbAdapter.execute('SELECT image_url FROM menu_items WHERE id_menu = ?', [id_menu]);
-        if (rows[0] && rows[0].image_url && rows[0].image_url.startsWith('/uploads/')) {
-            imageUrlToDelete = path.join(__dirname, rows[0].image_url);
-        }
-        
         const [result] = await dbAdapter.execute('DELETE FROM menu_items WHERE id_menu = ?', [id_menu]);
         
         if (result.affectedRows === 0) {
             return res.status(404).json({ message: 'Menu tidak ditemukan.' });
-        }
-        
-        // Clean up image file
-        if (imageUrlToDelete && fs.existsSync(imageUrlToDelete)) {
-            fs.unlinkSync(imageUrlToDelete);
-            console.log('Image file deleted:', imageUrlToDelete);
         }
         
         console.log(`Menu dengan ID ${id_menu} berhasil dihapus.`);
@@ -1675,6 +1646,7 @@ if (process.env.VERCEL) {
         console.log('  ✅ Type-safe order creation');
         console.log('  ✅ Enhanced error logging');
         console.log('  ✅ Debug endpoints for troubleshooting');
+        console.log('  ✅ Image via link only (image_link), no device uploads');
         console.log('='.repeat(60));
     });
 }
