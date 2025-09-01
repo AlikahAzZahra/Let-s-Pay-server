@@ -266,6 +266,7 @@ const isAllowedOrigin = (origin) => {
   return /^https:\/\/let-s-pay-jm5o-[\w-]+\.vercel\.app$/.test(origin);
 };
 
+// ⚠️ FIX PENTING: tambahkan 'Expires' agar preflight yang mengirim header ini tidak ditolak
 const corsOptions = {
   origin(origin, callback) {
     if (isAllowedOrigin(origin)) return callback(null, true);
@@ -282,6 +283,7 @@ const corsOptions = {
     'Authorization',
     'Cache-Control',
     'Pragma',
+    'Expires' // ← FIX: tambahkan ini
   ],
   optionsSuccessStatus: 204,
 };
@@ -535,11 +537,11 @@ app.post('/api/login', async (req, res) => {
     
     try {
       console.log('🔍 Looking up user in database...');
-const [userRows] = await dbAdapter.execute(
-    'SELECT id, username, password_hash, role, name FROM users WHERE username = ?',
-    [username]
-);
-const user = userRows[0];
+      const [userRows] = await dbAdapter.execute(
+          'SELECT id, username, password_hash, role, name FROM users WHERE username = ?',
+          [username]
+      );
+      const user = userRows[0];
     
         console.log('User found:', user ? 'YES' : 'NO');
         
@@ -597,25 +599,22 @@ const user = userRows[0];
     }
 });
 
-    app.post('/api/logout', authenticateToken, async (req, res) => {
-    try {
-        const token = req.headers.authorization?.split(' ')[1];
-        
-        // TODO: Add token to blacklist if needed
-        // await addToBlacklist(token);
-        
-        console.log('🚪 User logged out successfully');
-        res.json({ 
-            success: true,
-            message: 'Logout berhasil' 
-        });
-    } catch (error) {
-        console.error('Logout error:', error);
-        res.status(500).json({ 
-            success: false,
-            message: 'Error during logout' 
-        });
-    }
+app.post('/api/logout', authenticateToken, async (req, res) => {
+  try {
+      const token = req.headers.authorization?.split(' ')[1];
+      // TODO: blacklist jika diperlukan
+      console.log('🚪 User logged out successfully');
+      res.json({ 
+          success: true,
+          message: 'Logout berhasil' 
+      });
+  } catch (error) {
+      console.error('Logout error:', error);
+      res.status(500).json({ 
+          success: false,
+          message: 'Error during logout' 
+      });
+  }
 });
 
 // =====================================================
@@ -629,15 +628,10 @@ app.get('/api/menu', async (req, res) => {
         // Debug: Log availability values and normalize them
         const normalizedRows = rows.map((item, index) => {
             console.log(`Menu ${index + 1}: "${item.name}" - is_available: ${item.is_available} (type: ${typeof item.is_available})`);
-            
-            // Normalize is_available to ensure consistent frontend handling
-            const normalizedItem = {
+            return {
                 ...item,
                 is_available: isMenuAvailable(item.is_available) ? 1 : 0
             };
-            
-            console.log(`  -> Normalized to: ${normalizedItem.is_available}`);
-            return normalizedItem;
         });
         
         res.json(normalizedRows);
@@ -661,47 +655,37 @@ app.patch('/api/menu/:id_menu/availability', authenticateToken, async (req, res)
     const { id_menu } = req.params;
     const { is_available } = req.body;
     
-    // Validate id_menu
     if (!id_menu || isNaN(parseInt(id_menu))) {
         console.log('❌ Invalid menu ID:', id_menu);
         return res.status(400).json({ message: 'ID menu tidak valid.' });
     }
-    
-    // Validate is_available
     if (is_available === undefined || is_available === null) {
         console.log('❌ Missing is_available field');
         return res.status(400).json({ message: 'Field is_available wajib diisi.' });
     }
     
-    // FIXED: Use safe availability normalization
     const availabilityValue = normalizeAvailability(is_available);
-    
     console.log(`📝 Toggle request - ID: ${id_menu}, New availability: ${availabilityValue}`);
     
     try {
-        // First check if menu exists
         const [checkMenu] = await dbAdapter.execute(
             'SELECT id_menu, name FROM menu_items WHERE id_menu = ?',
             [parseInt(id_menu)]
         );
-        
         if (checkMenu.length === 0) {
             console.log('❌ Menu not found with ID:', id_menu);
             return res.status(404).json({ message: 'Menu tidak ditemukan.' });
         }
         
-        // Update availability
         const [result] = await dbAdapter.execute(
             'UPDATE menu_items SET is_available = ? WHERE id_menu = ?',
             [availabilityValue, parseInt(id_menu)]
         );
-        
         if (result.affectedRows === 0) {
             console.log('❌ No rows affected during update');
             return res.status(404).json({ message: 'Menu tidak ditemukan atau tidak ada perubahan.' });
         }
         
-        // Get updated menu item info for response
         const [menuItem] = await dbAdapter.execute(
             'SELECT name, is_available FROM menu_items WHERE id_menu = ?',
             [parseInt(id_menu)]
@@ -942,7 +926,7 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       ORDER BY o.order_time DESC
     `);
 
-    // Get order items for each order (2 tahap, tapi konsisten)
+    // Get order items
     const itemSqlPG = `
       SELECT 
         oi.menu_item_id,
@@ -971,8 +955,8 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
     for (let order of orders) {
       try {
         const sql = isPostgreSQL ? itemSqlPG : itemSqlMy;
-        const [rows] = await dbAdapter.execute(sql, [order.order_id]); // REVISION: hindari .pool.query
-        // FE kamu sebelumnya expect string => tetap stringify
+        const [rows] = await dbAdapter.execute(sql, [order.order_id]);
+        // FE expect string for items
         order.items = JSON.stringify(rows ?? []);
         console.log(`Order ${order.order_id} items:`, rows);
       } catch (error) {
@@ -1252,9 +1236,13 @@ app.put('/api/orders/:id/status', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT /api/orders/:id/payment_status — FIX: placeholder & hasil update
-app.put('/api/orders/:id/payment_status', async (req, res) => {
+// PUT /api/orders/:id/payment_status — SECURED + FIXED
+app.put('/api/orders/:id/payment_status', authenticateToken, async (req, res) => {
   console.log('💰 PUT /api/orders/:id/payment_status called');
+
+  if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
+    return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa mengupdate status pembayaran.' });
+  }
 
   const { id } = req.params;
   const { payment_status, payment_method } = req.body;
@@ -1402,13 +1390,25 @@ app.get('/api/reports/sales', authenticateToken, async (req, res) => {
     }
     
     const { startDate, endDate } = req.query;
-    
     if (!startDate || !endDate) {
         return res.status(400).json({ message: 'Parameter startDate dan endDate diperlukan.' });
     }
+
+    const isPostgreSQL =
+      process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
+      (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
     
     try {
-        const [totalSalesResult] = await dbAdapter.execute(`
+        const totalSalesSql = isPostgreSQL ? `
+            SELECT 
+                COALESCE(SUM(total_amount), 0) as total_sales,
+                COUNT(*) as total_orders,
+                SUM(CASE WHEN status = 'Selesai' THEN 1 ELSE 0 END) as completed_orders,
+                SUM(CASE WHEN status = 'Dibatalkan' THEN 1 ELSE 0 END) as cancelled_orders,
+                SUM(CASE WHEN status = 'Dalam Proses' THEN 1 ELSE 0 END) as pending_orders
+            FROM orders 
+            WHERE DATE(order_time) BETWEEN $1 AND $2
+        ` : `
             SELECT 
                 COALESCE(SUM(total_amount), 0) as total_sales,
                 COUNT(*) as total_orders,
@@ -1417,17 +1417,35 @@ app.get('/api/reports/sales', authenticateToken, async (req, res) => {
                 SUM(CASE WHEN status = 'Dalam Proses' THEN 1 ELSE 0 END) as pending_orders
             FROM orders 
             WHERE DATE(order_time) BETWEEN ? AND ?
-        `, [startDate, endDate]);
-
-        const [todaySalesResult] = await dbAdapter.execute(`
+        `;
+        const todaySalesSql = isPostgreSQL ? `
+            SELECT 
+                COALESCE(SUM(total_amount), 0) as total_sales_today,
+                COUNT(*) as total_orders_today
+            FROM orders 
+            WHERE DATE(order_time) = $1
+        ` : `
             SELECT 
                 COALESCE(SUM(total_amount), 0) as total_sales_today,
                 COUNT(*) as total_orders_today
             FROM orders 
             WHERE DATE(order_time) = ?
-        `, [startDate]);
-
-        const [topSellingItems] = await dbAdapter.execute(`
+        `;
+        const topSellingSql = isPostgreSQL ? `
+            SELECT 
+                oi.menu_item_id,
+                mi.name as menu_name,
+                SUM(oi.quantity) as total_quantity,
+                SUM(oi.quantity * oi.price_at_order) as total_revenue,
+                AVG(oi.price_at_order) as avg_price
+            FROM order_items oi
+            JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+            JOIN orders o ON oi.order_id = o.id_orders
+            WHERE DATE(o.order_time) BETWEEN $1 AND $2
+            GROUP BY oi.menu_item_id, mi.name
+            ORDER BY total_quantity DESC
+            LIMIT 10
+        ` : `
             SELECT 
                 oi.menu_item_id,
                 mi.name as menu_name,
@@ -1441,9 +1459,16 @@ app.get('/api/reports/sales', authenticateToken, async (req, res) => {
             GROUP BY oi.menu_item_id, mi.name
             ORDER BY total_quantity DESC
             LIMIT 10
-        `, [startDate, endDate]);
-
-        const [salesByPaymentMethod] = await dbAdapter.execute(`
+        `;
+        const salesByMethodSql = isPostgreSQL ? `
+            SELECT 
+                COALESCE(payment_method, 'Unknown') as payment_method,
+                COUNT(*) as order_count,
+                SUM(total_amount) as total_amount
+            FROM orders 
+            WHERE DATE(order_time) BETWEEN $1 AND $2
+            GROUP BY payment_method
+        ` : `
             SELECT 
                 COALESCE(payment_method, 'Unknown') as payment_method,
                 COUNT(*) as order_count,
@@ -1451,9 +1476,17 @@ app.get('/api/reports/sales', authenticateToken, async (req, res) => {
             FROM orders 
             WHERE DATE(order_time) BETWEEN ? AND ?
             GROUP BY payment_method
-        `, [startDate, endDate]);
-
-        const [salesByDate] = await dbAdapter.execute(`
+        `;
+        const salesByDateSql = isPostgreSQL ? `
+            SELECT 
+                DATE(order_time) as sale_date,
+                SUM(total_amount) as daily_total,
+                COUNT(*) as order_count
+            FROM orders 
+            WHERE DATE(order_time) BETWEEN $1 AND $2
+            GROUP BY DATE(order_time)
+            ORDER BY sale_date DESC
+        ` : `
             SELECT 
                 DATE(order_time) as sale_date,
                 SUM(total_amount) as daily_total,
@@ -1462,16 +1495,24 @@ app.get('/api/reports/sales', authenticateToken, async (req, res) => {
             WHERE DATE(order_time) BETWEEN ? AND ?
             GROUP BY DATE(order_time)
             ORDER BY sale_date DESC
-        `, [startDate, endDate]);
+        `;
+
+        const params = [startDate, endDate];
+
+        const [totalSalesResult]     = await dbAdapter.execute(totalSalesSql, params);
+        const [todaySalesResult]     = await dbAdapter.execute(todaySalesSql, [startDate]);
+        const [topSellingItems]      = await dbAdapter.execute(topSellingSql, params);
+        const [salesByPaymentMethod] = await dbAdapter.execute(salesByMethodSql, params);
+        const [salesByDate]          = await dbAdapter.execute(salesByDateSql, params);
         
         const reportData = {
-            totalSales: totalSalesResult[0].total_sales || 0,
-            totalOrders: totalSalesResult[0].total_orders || 0,
-            completedOrders: totalSalesResult[0].completed_orders || 0,
-            cancelledOrders: totalSalesResult[0].cancelled_orders || 0,
-            pendingOrders: totalSalesResult[0].pending_orders || 0,
-            totalSalesToday: todaySalesResult[0].total_sales_today || 0,
-            totalOrdersToday: todaySalesResult[0].total_orders_today || 0,
+            totalSales: totalSalesResult[0]?.total_sales || 0,
+            totalOrders: totalSalesResult[0]?.total_orders || 0,
+            completedOrders: totalSalesResult[0]?.completed_orders || 0,
+            cancelledOrders: totalSalesResult[0]?.cancelled_orders || 0,
+            pendingOrders: totalSalesResult[0]?.pending_orders || 0,
+            totalSalesToday: todaySalesResult[0]?.total_sales_today || 0,
+            totalOrdersToday: todaySalesResult[0]?.total_orders_today || 0,
             topSellingItems: topSellingItems,
             salesByPaymentMethod: salesByPaymentMethod,
             salesByDate: salesByDate
@@ -1641,11 +1682,13 @@ if (process.env.VERCEL) {
         console.log('  • GET  /api/debug/menu/:id (boolean-safe)');
         console.log('='.repeat(60));
         console.log('🔧 KEY FIXES APPLIED:');
+        console.log('  ✅ CORS: allowedHeaders termasuk Expires (preflight tidak diblok)');
         console.log('  ✅ Safe table lookup function with string handling');
         console.log('  ✅ Boolean-safe menu availability checks');
         console.log('  ✅ Type-safe order creation');
+        console.log('  ✅ Payment status secured (auth + role check)');
+        console.log('  ✅ PostgreSQL/MySQL compatibility di endpoints penting');
         console.log('  ✅ Enhanced error logging');
-        console.log('  ✅ Debug endpoints for troubleshooting');
         console.log('  ✅ Image via link only (image_link), no device uploads');
         console.log('='.repeat(60));
     });
