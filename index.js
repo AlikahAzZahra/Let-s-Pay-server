@@ -891,25 +891,15 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 // =====================================================
 // ========================= REVISED ROUTES =========================
 
-// GET /api/orders — FIX: konsisten execute + placeholder per DB
-// GET /api/orders — FIXED VERSION dengan debugging lebih baik
 app.get('/api/orders', authenticateToken, async (req, res) => {
-  console.log('📋 GET /api/orders called');
-  console.log('Headers:', req.headers);
-  console.log('Query params:', req.query);
-
+  console.log('GET /api/orders called');
+  
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
-    return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa melihat pesanan.' });
+    return res.status(403).json({ message: 'Akses ditolak.' });
   }
 
-  const isPostgreSQL =
-    process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
-    (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
-
   try {
-    console.log('🔍 Fetching orders from database...');
-    
-    // Get all orders with table info
+    // Query asli yang sudah bekerja
     const [orders] = await dbAdapter.execute(`
       SELECT 
         o.id_orders as order_id,
@@ -920,9 +910,6 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
         o.status as order_status,
         o.payment_status,
         o.payment_method,
-        o.midtrans_order_id,
-        o.midtrans_transaction_id,
-        o.midtrans_transaction_status,
         o.order_time,
         o.updated_at
       FROM orders o
@@ -930,84 +917,36 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       ORDER BY o.order_time DESC
     `);
 
-    console.log(`📊 Found ${orders.length} orders`);
-
-    // Get order items for each order
-    const itemSqlPG = `
-      SELECT 
-        oi.menu_item_id,
-        mi.name as menu_name,
-        oi.quantity,
-        oi.price_at_order,
-        oi.spiciness_level,
-        oi.temperature_level
-      FROM order_items oi
-      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      WHERE oi.order_id = $1
-      ORDER BY oi.id ASC
-    `;
-    const itemSqlMy = `
-      SELECT 
-        oi.menu_item_id,
-        mi.name as menu_name,
-        oi.quantity,
-        oi.price_at_order,
-        oi.spiciness_level,
-        oi.temperature_level
-      FROM order_items oi
-      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      WHERE oi.order_id = ?
-      ORDER BY oi.id ASC
-    `;
-
-    // Process each order to get its items
+    // Items query asli yang sudah bekerja
     for (let order of orders) {
       try {
-        const sql = isPostgreSQL ? itemSqlPG : itemSqlMy;
-        console.log(`🔍 Fetching items for order ${order.order_id}...`);
+        const [rows] = await dbAdapter.execute(`
+          SELECT 
+            oi.menu_item_id,
+            mi.name as menu_name,
+            oi.quantity,
+            oi.price_at_order,
+            oi.spiciness_level,
+            oi.temperature_level
+          FROM order_items oi
+          JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+          WHERE oi.order_id = $1
+        `, [order.order_id]);
         
-        const [rows] = await dbAdapter.execute(sql, [order.order_id]);
-        console.log(`📦 Order ${order.order_id} has ${rows.length} items:`, rows);
-        
-        // PENTING: Pastikan items dikembalikan sebagai JSON string yang valid
+        // Format yang sama seperti sebelumnya
         order.items = JSON.stringify(rows || []);
         
-        // Log untuk debugging
-        if (rows && rows.length > 0) {
-          console.log(`✅ Order ${order.order_id} items processed successfully`);
-        } else {
-          console.warn(`⚠️ Order ${order.order_id} has no items`);
-        }
-        
-      } catch (itemError) {
-        console.error(`❌ Error fetching items for order ${order.order_id}:`, itemError);
-        // Set empty array as fallback
+      } catch (error) {
+        console.error(`Error fetching items for order ${order.order_id}:`, error);
         order.items = JSON.stringify([]);
       }
     }
 
-    console.log(`✅ Orders processed successfully, returning ${orders.length} orders`);
-    
-    // Set proper headers untuk mencegah caching
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    
     res.json(orders);
-
-  } catch (error) {
-    console.error('❌ Error fetching orders:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      code: error.code
-    });
     
-    res.status(500).json({ 
-      message: 'Gagal mengambil data pesanan.',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
   }
 });
 
