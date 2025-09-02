@@ -893,182 +893,342 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 
 // GET /api/orders — FIX: konsisten execute + placeholder per DB
 // GET /api/orders — FIXED VERSION dengan debugging lebih baik
-app.post('/api/orders', async (req, res) => {
-  console.log('🎯 POST /api/orders - ITEM INSERTION FIX');
-  
-  const { tableNumber, items, customerName } = req.body;
-  
-  if (!items || items.length === 0) {
-    return res.status(400).json({ message: 'Items tidak boleh kosong.' });
+app.get('/api/orders', authenticateToken, async (req, res) => {
+  console.log('📋 GET /api/orders called');
+  console.log('Headers:', req.headers);
+  console.log('Query params:', req.query);
+
+  if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
+    return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa melihat pesanan.' });
   }
-  
+
+  const isPostgreSQL =
+    process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
+    (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
+
   try {
-    const tableId = await safeTableLookup(tableNumber);
-    if (!tableId) {
-      return res.status(404).json({ message: 'Meja tidak ditemukan.' });
-    }
-
-    // Calculate total and validate items
-    let totalAmount = 0;
-    const validatedItems = [];
-
-    for (const item of items) {
-      const [menuRows] = await dbAdapter.execute(
-        'SELECT id_menu, name, price FROM menu_items WHERE id_menu = $1', 
-        [item.id_menu]
-      );
-      
-      if (!menuRows[0]) {
-        return res.status(400).json({ message: `Menu ${item.id_menu} tidak ditemukan` });
-      }
-
-      const price = parseFloat(menuRows[0].price);
-      const quantity = parseInt(item.quantity);
-      totalAmount += price * quantity;
-      
-      validatedItems.push({
-        menu_item_id: item.id_menu,
-        quantity: quantity,
-        price_at_order: price,
-        spiciness_level: item.spiciness_level || null,
-        temperature_level: item.temperature_level || null
-      });
-    }
-
-    // Create order
-    const [orderResult] = await dbAdapter.execute(
-      `INSERT INTO orders (table_id, customer_name, total_amount, status, payment_status, payment_method, order_time) 
-       VALUES ($1, $2, $3, 'Dalam Proses', 'Belum Bayar', 'cash', NOW()) 
-       RETURNING id_orders`,
-      [tableId, customerName || null, totalAmount]
-    );
-
-    const orderId = orderResult[0].id_orders;
-    console.log('✅ Order created:', orderId);
-
-    // Insert items one by one with detailed logging
-    for (const item of validatedItems) {
-      console.log('📦 Inserting item:', item);
-      
-      const [itemResult] = await dbAdapter.execute(
-        `INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) 
-         VALUES ($1, $2, $3, $4, $5, $6) 
-         RETURNING id_order_item`,
-        [orderId, item.menu_item_id, item.quantity, item.price_at_order, item.spiciness_level, item.temperature_level]
-      );
-      
-      console.log('✅ Item inserted:', itemResult[0]);
-    }
-
-    // Verify insertion
-    const [verify] = await dbAdapter.execute(
-      'SELECT COUNT(*) as count FROM order_items WHERE order_id = $1',
-      [orderId]
-    );
+    console.log('🔍 Fetching orders from database...');
     
-    console.log(`🔍 Verification: ${verify[0].count} items inserted`);
+    // Get all orders with table info
+    const [orders] = await dbAdapter.execute(`
+      SELECT 
+        o.id_orders as order_id,
+        o.table_id,
+        t.table_number,
+        o.customer_name,  
+        o.total_amount,
+        o.status as order_status,
+        o.payment_status,
+        o.payment_method,
+        o.midtrans_order_id,
+        o.midtrans_transaction_id,
+        o.midtrans_transaction_status,
+        o.order_time,
+        o.updated_at
+      FROM orders o
+      LEFT JOIN tables t ON o.table_id = t.id_table
+      ORDER BY o.order_time DESC
+    `);
 
-    res.json({
-      success: true,
-      message: 'Pesanan berhasil dibuat!',
-      orderId: orderId,
-      itemCount: verify[0].count
+    console.log(`📊 Found ${orders.length} orders`);
+
+    // Get order items for each order
+    const itemSqlPG = `
+      SELECT 
+        oi.menu_item_id,
+        mi.name as menu_name,
+        oi.quantity,
+        oi.price_at_order,
+        oi.spiciness_level,
+        oi.temperature_level
+      FROM order_items oi
+      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+      WHERE oi.order_id = $1
+      ORDER BY oi.id ASC
+    `;
+    const itemSqlMy = `
+      SELECT 
+        oi.menu_item_id,
+        mi.name as menu_name,
+        oi.quantity,
+        oi.price_at_order,
+        oi.spiciness_level,
+        oi.temperature_level
+      FROM order_items oi
+      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+      WHERE oi.order_id = ?
+      ORDER BY oi.id ASC
+    `;
+
+    // Process each order to get its items
+    for (let order of orders) {
+      try {
+        const sql = isPostgreSQL ? itemSqlPG : itemSqlMy;
+        console.log(`🔍 Fetching items for order ${order.order_id}...`);
+        
+        const [rows] = await dbAdapter.execute(sql, [order.order_id]);
+        console.log(`📦 Order ${order.order_id} has ${rows.length} items:`, rows);
+        
+        // PENTING: Pastikan items dikembalikan sebagai JSON string yang valid
+        order.items = JSON.stringify(rows || []);
+        
+        // Log untuk debugging
+        if (rows && rows.length > 0) {
+          console.log(`✅ Order ${order.order_id} items processed successfully`);
+        } else {
+          console.warn(`⚠️ Order ${order.order_id} has no items`);
+        }
+        
+      } catch (itemError) {
+        console.error(`❌ Error fetching items for order ${order.order_id}:`, itemError);
+        // Set empty array as fallback
+        order.items = JSON.stringify([]);
+      }
+    }
+
+    console.log(`✅ Orders processed successfully, returning ${orders.length} orders`);
+    
+    // Set proper headers untuk mencegah caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    res.json(orders);
+
+  } catch (error) {
+    console.error('❌ Error fetching orders:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
     });
-
-  } catch (err) {
-    console.error('❌ Order creation error:', err);
-    res.status(500).json({ message: err.message });
+    
+    res.status(500).json({ 
+      message: 'Gagal mengambil data pesanan.',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
 // POST /api/orders — (tetap) hanya perapihan kecil komentar; logic sudah OK
-// GANTI POST /api/orders di index.js dengan versi SIMPLIFIED ini:
-
 app.post('/api/orders', async (req, res) => {
-  console.log('🎯 POST /api/orders - ITEM INSERTION FIX');
-  
-  const { tableNumber, items, customerName } = req.body;
-  
-  if (!items || items.length === 0) {
-    return res.status(400).json({ message: 'Items tidak boleh kosong.' });
+  console.log('🎯 POST /api/orders called - FIXED VERSION (PostgreSQL Compatible)');
+  console.log('Request body received:', JSON.stringify(req.body, null, 2));
+
+  const { 
+    tableNumber, 
+    items, 
+    customerName, 
+    payment_status, 
+    payment_method, 
+    midtrans_order_id, 
+    midtrans_transaction_id 
+  } = req.body;
+
+  if (!tableNumber || !items || !Array.isArray(items) || items.length === 0) {
+    console.log('❌ Missing required fields or invalid items');
+    return res.status(400).json({ message: 'Nomor meja dan item pesanan tidak boleh kosong.' });
   }
-  
+
+  console.log('🔍 Validating request data...');
+  console.log('Table Number:', tableNumber, typeof tableNumber);
+  console.log('Items count:', items.length);
+
   try {
+    console.log('🔍 Using safeTableLookup for table:', tableNumber);
     const tableId = await safeTableLookup(tableNumber);
+
     if (!tableId) {
-      return res.status(404).json({ message: 'Meja tidak ditemukan.' });
+      console.log('❌ Table lookup failed for:', tableNumber);
+      return res.status(404).json({ message: `Meja ${tableNumber} tidak ditemukan dan tidak dapat dibuat.` });
     }
 
-    // Calculate total and validate items
-    let totalAmount = 0;
-    const validatedItems = [];
+    console.log('✅ Table ID determined safely:', tableId);
 
-    for (const item of items) {
-      const [menuRows] = await dbAdapter.execute(
-        'SELECT id_menu, name, price FROM menu_items WHERE id_menu = $1', 
-        [item.id_menu]
-      );
-      
-      if (!menuRows[0]) {
-        return res.status(400).json({ message: `Menu ${item.id_menu} tidak ditemukan` });
+    let totalAmount = 0;
+    const orderItemsForDb = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      console.log(`🔍 Processing item ${i + 1}:`, item);
+
+      if (!item || !item.id_menu) {
+        console.log(`❌ Invalid item at index ${i}:`, item);
+        return res.status(400).json({ message: `Item pesanan ke-${i + 1} tidak valid.` });
       }
 
-      const price = parseFloat(menuRows[0].price);
-      const quantity = parseInt(item.quantity);
-      totalAmount += price * quantity;
-      
-      validatedItems.push({
-        menu_item_id: item.id_menu,
+      const menuId = parseInt(item.id_menu);
+      const quantity = parseInt(item.quantity) || 0;
+
+      if (isNaN(menuId) || quantity <= 0) {
+        console.log(`❌ Invalid menu ID or quantity for item ${i}:`, { menuId, quantity });
+        return res.status(400).json({ message: `Menu ID atau kuantitas tidak valid untuk item ke-${i + 1}.` });
+      }
+
+      const [menuRows] = await dbAdapter.execute(
+        'SELECT id_menu, name, price, is_available FROM menu_items WHERE id_menu = ?', 
+        [menuId]
+      );
+      const menuItem = menuRows[0];
+
+      if (!menuItem) {
+        console.log(`❌ Menu item not found:`, menuId);
+        return res.status(400).json({ message: `Item menu dengan ID ${menuId} tidak ditemukan.` });
+      }
+
+      if (!isMenuAvailable(menuItem.is_available)) {
+        console.log(`❌ Menu item not available:`, menuItem);
+        return res.status(400).json({ message: `Item menu ${menuItem.name} tidak tersedia.` });
+      }
+
+      const itemPrice = parseFloat(menuItem.price) || 0;
+      const itemTotal = itemPrice * quantity;
+
+      if (isNaN(itemTotal) || itemTotal < 0) {
+        console.log(`❌ Invalid item total:`, { itemPrice, quantity, itemTotal });
+        return res.status(400).json({ message: `Harga tidak valid untuk item ${menuItem.name}.` });
+      }
+
+      totalAmount += itemTotal;
+
+      orderItemsForDb.push({
+        menu_item_id: menuId,
         quantity: quantity,
-        price_at_order: price,
+        price_at_order: itemPrice,
         spiciness_level: item.spiciness_level || null,
         temperature_level: item.temperature_level || null
       });
+
+      console.log(`✅ Processed item: ${menuItem.name} x${quantity} @ ${itemPrice} = ${itemTotal}`);
     }
 
-    // Create order
-    const [orderResult] = await dbAdapter.execute(
-      `INSERT INTO orders (table_id, customer_name, total_amount, status, payment_status, payment_method, order_time) 
-       VALUES ($1, $2, $3, 'Dalam Proses', 'Belum Bayar', 'cash', NOW()) 
-       RETURNING id_orders`,
-      [tableId, customerName || null, totalAmount]
-    );
+    totalAmount = Math.round(totalAmount * 100) / 100;
+    if (isNaN(totalAmount) || totalAmount <= 0) {
+      console.log(`❌ Invalid total amount:`, totalAmount);
+      return res.status(400).json({ message: 'Total amount pesanan tidak valid.' });
+    }
 
-    const orderId = orderResult[0].id_orders;
-    console.log('✅ Order created:', orderId);
+    console.log('💰 Total amount calculated:', totalAmount);
 
-    // Insert items one by one with detailed logging
-    for (const item of validatedItems) {
-      console.log('📦 Inserting item:', item);
-      
-      const [itemResult] = await dbAdapter.execute(
-        `INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) 
-         VALUES ($1, $2, $3, $4, $5, $6) 
-         RETURNING id_order_item`,
-        [orderId, item.menu_item_id, item.quantity, item.price_at_order, item.spiciness_level, item.temperature_level]
+    const orderData = {
+      table_id: parseInt(tableId),
+      customer_name: customerName ? String(customerName).trim() : null,
+      total_amount: parseFloat(totalAmount),
+      status: String('Dalam Proses'),
+      payment_status: payment_status ? String(payment_status) : String('Belum Bayar'),
+      payment_method: payment_method ? String(payment_method) : String('cash'),
+      midtrans_order_id: midtrans_order_id ? String(midtrans_order_id) : null,
+      midtrans_transaction_id: midtrans_transaction_id ? String(midtrans_transaction_id) : null
+    };
+
+    console.log('📝 Final order data:', orderData);
+
+    const insertParams = [
+      orderData.table_id,
+      orderData.customer_name,
+      orderData.total_amount,
+      orderData.status,
+      orderData.payment_status,
+      orderData.payment_method,
+      orderData.midtrans_order_id,
+      orderData.midtrans_transaction_id
+    ];
+
+    console.log('🔍 Insert parameters:', insertParams);
+
+    let orderId;
+    const isPostgreSQL =
+      process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' || 
+      (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
+
+    if (isPostgreSQL) {
+      console.log('🐘 Using PostgreSQL INSERT with RETURNING clause');
+      const [orderResult] = await dbAdapter.execute(
+        `INSERT INTO orders 
+         (table_id, customer_name, total_amount, status, payment_status, payment_method, midtrans_order_id, midtrans_transaction_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+         RETURNING id_orders`,
+        insertParams
       );
-      
-      console.log('✅ Item inserted:', itemResult[0]);
+
+      console.log('🔍 PostgreSQL INSERT result:', orderResult);
+      if (orderResult && orderResult.length > 0 && orderResult[0].id_orders) {
+        orderId = orderResult[0].id_orders;
+        console.log('✅ Order ID from PostgreSQL RETURNING:', orderId);
+      } else {
+        console.error('❌ PostgreSQL INSERT failed - no RETURNING result');
+        throw new Error('Failed to get order ID from PostgreSQL insert result');
+      }
+
+    } else {
+      console.log('🐬 Using MySQL INSERT');
+      const [orderResult] = await dbAdapter.execute(
+        `INSERT INTO orders 
+         (table_id, customer_name, total_amount, status, payment_status, payment_method, midtrans_order_id, midtrans_transaction_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        insertParams
+      );
+
+      console.log('🔍 MySQL INSERT result:', orderResult);
+      orderId = orderResult.insertId;
+      if (!orderId) {
+        console.error('❌ MySQL INSERT failed - no insertId');
+        throw new Error('Failed to get order ID from MySQL insert result');
+      }
+      console.log('✅ Order ID from MySQL insertId:', orderId);
     }
 
-    // Verify insertion
-    const [verify] = await dbAdapter.execute(
-      'SELECT COUNT(*) as count FROM order_items WHERE order_id = $1',
-      [orderId]
-    );
-    
-    console.log(`🔍 Verification: ${verify[0].count} items inserted`);
+    console.log('✅ Order created with ID:', orderId);
 
-    res.json({
+    // Insert order items
+    for (const item of orderItemsForDb) {
+      console.log('📝 Inserting order item:', item);
+
+      const itemParams = [
+        parseInt(orderId),
+        parseInt(item.menu_item_id),
+        parseInt(item.quantity),
+        parseFloat(item.price_at_order),
+        item.spiciness_level ? String(item.spiciness_level) : null,
+        item.temperature_level ? String(item.temperature_level) : null
+      ];
+
+      if (isPostgreSQL) {
+        await dbAdapter.execute(
+          'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES ($1, $2, $3, $4, $5, $6)',
+          itemParams
+        );
+      } else {
+        await dbAdapter.execute(
+          'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES (?, ?, ?, ?, ?, ?)',
+          itemParams
+        );
+      }
+
+      console.log(`✅ Order item inserted: menu_id=${item.menu_item_id}, quantity=${item.quantity}`);
+    }
+
+    console.log('🎉 Order completed successfully!');
+    res.status(201).json({ 
       success: true,
-      message: 'Pesanan berhasil dibuat!',
+      message: 'Pesanan berhasil diterima dan sedang diproses!', 
       orderId: orderId,
-      itemCount: verify[0].count
+      totalAmount: totalAmount,
+      payment_status: orderData.payment_status,
+      itemCount: orderItemsForDb.length
     });
 
   } catch (err) {
-    console.error('❌ Order creation error:', err);
-    res.status(500).json({ message: err.message });
+    console.error('❌ DETAILED ORDER CREATION ERROR:');
+    console.error('- Error message:', err.message);
+    console.error('- Error stack:', err.stack);
+    console.error('- Request body received:', req.body);
+
+    res.status(500).json({ 
+      message: 'Terjadi kesalahan saat memproses pesanan.',
+      error: err.message 
+    });
   }
 });
 
