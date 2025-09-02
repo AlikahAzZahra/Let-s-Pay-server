@@ -1173,83 +1173,105 @@ app.post('/api/orders', async (req, res) => {
 
 // PUT /api/orders/:id/status — FIX: placeholder & hasil update
 app.put('/api/orders/:id/status', authenticateToken, async (req, res) => {
-  console.log('📋 PUT /api/orders/:id/status called');
-
+  console.log('PUT /api/orders/:id/status called with ID:', req.params.id);
+  
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
-    return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa mengupdate status pesanan.' });
+    return res.status(403).json({ message: 'Akses ditolak.' });
   }
 
   const { id } = req.params;
   const { status } = req.body;
-  const validStatuses = ['Dalam Proses', 'Selesai', 'Dibatalkan'];
-
-  if (!status || !validStatuses.includes(status)) {
-    return res.status(400).json({ message: 'Status tidak valid.' });
-  }
-
-  const isPostgreSQL =
-    process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
-    (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
-
+  
   try {
-    const sql = isPostgreSQL
-      ? 'UPDATE orders SET status = $1, updated_at = NOW() WHERE id_orders = $2'
-      : 'UPDATE orders SET status = ?, updated_at = NOW() WHERE id_orders = ?';
-
-    const [result] = await dbAdapter.execute(sql, [status, id]);
-
-    const changed = (result?.affectedRows ?? result?.rowCount ?? 0);
-    if (changed === 0) {
-      return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
+    const [result] = await dbAdapter.execute(
+      'UPDATE orders SET status = $1, updated_at = NOW() WHERE id_orders = $2',
+      [status, parseInt(id)]
+    );
+    
+    console.log('Update result:', result);
+    
+    // PERBAIKAN: Cek PostgreSQL result format
+    const affectedRows = result.rowCount || result.affectedRows || 0;
+    
+    if (affectedRows === 0) {
+      // Double check dengan query select
+      const [checkOrder] = await dbAdapter.execute(
+        'SELECT id_orders FROM orders WHERE id_orders = $1',
+        [parseInt(id)]
+      );
+      
+      if (checkOrder.length === 0) {
+        return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
+      }
+      
+      // Order exists but update didn't affect rows (maybe status same)
+      console.log('Order exists but no update needed');
     }
-
+    
     console.log(`Status pesanan ${id} diupdate menjadi: ${status}`);
-    res.json({ message: `Status pesanan berhasil diupdate menjadi ${status}!` });
+    res.json({ 
+      success: true,
+      message: `Status pesanan berhasil diupdate menjadi ${status}!` 
+    });
 
   } catch (err) {
     console.error('Error updating order status:', err);
-    res.status(500).json({ message: 'Gagal mengupdate status pesanan.' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Gagal mengupdate status pesanan: ' + err.message 
+    });
   }
 });
 
 // PUT /api/orders/:id/payment_status — SECURED + FIXED
 app.put('/api/orders/:id/payment_status', authenticateToken, async (req, res) => {
-  console.log('💰 PUT /api/orders/:id/payment_status called');
-
+  console.log('PUT /api/orders/:id/payment_status called with ID:', req.params.id);
+  
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
-    return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa mengupdate status pembayaran.' });
+    return res.status(403).json({ message: 'Akses ditolak.' });
   }
 
   const { id } = req.params;
   const { payment_status, payment_method } = req.body;
-  const validPaymentStatuses = ['Belum Bayar', 'Sudah Bayar', 'Pending', 'Dikembalikan', 'Dibatalkan', 'Gagal'];
-
-  if (!payment_status || !validPaymentStatuses.includes(payment_status)) {
-    return res.status(400).json({ message: 'Status pembayaran tidak valid.' });
-  }
-
-  const isPostgreSQL =
-    process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
-    (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
-
+  
   try {
-    const sql = isPostgreSQL
-      ? 'UPDATE orders SET payment_status = $1, payment_method = $2, updated_at = NOW() WHERE id_orders = $3'
-      : 'UPDATE orders SET payment_status = ?, payment_method = ?, updated_at = NOW() WHERE id_orders = ?';
-
-    const [result] = await dbAdapter.execute(sql, [payment_status, payment_method || null, id]);
-
-    const changed = (result?.affectedRows ?? result?.rowCount ?? 0);
-    if (changed === 0) {
-      return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
+    const [result] = await dbAdapter.execute(
+      'UPDATE orders SET payment_status = $1, payment_method = $2, updated_at = NOW() WHERE id_orders = $3',
+      [payment_status, payment_method || null, parseInt(id)]
+    );
+    
+    console.log('Payment update result:', result);
+    
+    // PERBAIKAN: Cek PostgreSQL result format
+    const affectedRows = result.rowCount || result.affectedRows || 0;
+    
+    if (affectedRows === 0) {
+      // Double check order existence
+      const [checkOrder] = await dbAdapter.execute(
+        'SELECT id_orders, payment_status FROM orders WHERE id_orders = $1',
+        [parseInt(id)]
+      );
+      
+      if (checkOrder.length === 0) {
+        return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
+      }
+      
+      // Order exists, maybe payment_status is same
+      console.log('Order exists, payment status may be unchanged');
     }
-
-    console.log(`💰 Status pembayaran pesanan ${id} diupdate menjadi: ${payment_status}`);
-    res.json({ message: `Status pembayaran pesanan berhasil diupdate menjadi ${payment_status}!` });
+    
+    console.log(`Status pembayaran pesanan ${id} diupdate menjadi: ${payment_status}`);
+    res.json({ 
+      success: true,
+      message: `Status pembayaran pesanan berhasil diupdate menjadi ${payment_status}!` 
+    });
 
   } catch (err) {
     console.error('Error updating payment status:', err);
-    res.status(500).json({ message: 'Gagal mengupdate status pembayaran.' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Gagal mengupdate status pembayaran: ' + err.message 
+    });
   }
 });
 
