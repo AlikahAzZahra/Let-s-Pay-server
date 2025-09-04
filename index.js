@@ -891,15 +891,25 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 // =====================================================
 // ========================= REVISED ROUTES =========================
 
-app.get('/api/orders', authenticateToken, async (req, res) => {
-  console.log('GET /api/orders called');
+// GET single order by ID  
+app.get('/api/orders/:id', authenticateToken, async (req, res) => {
+  console.log('GET /api/orders/:id called with ID:', req.params.id);
   
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
     return res.status(403).json({ message: 'Akses ditolak.' });
   }
 
+  const { id } = req.params;
+  console.log(`🔍 PUT request for order ID: ${id} (type: ${typeof id})`);
+  console.log('🔍 Request body:', JSON.stringify(req.body, null, 2));
+  console.log('🔍 User role:', req.user?.role);
+
   try {
-    // PERBAIKAN: Single query dengan JOIN dan manual aggregation
+    const isPostgreSQL = process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
+      (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
+    
+    const placeholder = isPostgreSQL ? '$1' : '?';
+    
     const [ordersWithItems] = await dbAdapter.execute(`
       SELECT 
         o.id_orders as order_id,
@@ -922,34 +932,32 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       LEFT JOIN tables t ON o.table_id = t.id_table
       LEFT JOIN order_items oi ON o.id_orders = oi.order_id
       LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      ORDER BY o.order_time DESC, oi.menu_item_id ASC
-    `);
+      WHERE o.id_orders = ${placeholder}
+      ORDER BY oi.menu_item_id ASC
+    `, [parseInt(id)]);
 
-    // Manual aggregation untuk compatibility dengan semua database
-    const ordersMap = new Map();
+    if (ordersWithItems.length === 0) {
+      return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
+    }
+
+    const firstRow = ordersWithItems[0];
+    const order = {
+      order_id: firstRow.order_id,
+      table_id: firstRow.table_id,
+      table_number: firstRow.table_number,
+      customer_name: firstRow.customer_name,
+      total_amount: firstRow.total_amount,
+      order_status: firstRow.order_status,
+      payment_status: firstRow.payment_status,
+      payment_method: firstRow.payment_method,
+      order_time: firstRow.order_time,
+      updated_at: firstRow.updated_at,
+      items: []
+    };
     
     for (const row of ordersWithItems) {
-      const orderId = row.order_id;
-      
-      if (!ordersMap.has(orderId)) {
-        ordersMap.set(orderId, {
-          order_id: row.order_id,
-          table_id: row.table_id,
-          table_number: row.table_number,
-          customer_name: row.customer_name,
-          total_amount: row.total_amount,
-          order_status: row.order_status,
-          payment_status: row.payment_status,
-          payment_method: row.payment_method,
-          order_time: row.order_time,
-          updated_at: row.updated_at,
-          items: []
-        });
-      }
-      
-      // Add item to order if exists
       if (row.menu_item_id) {
-        ordersMap.get(orderId).items.push({
+        order.items.push({
           menu_item_id: row.menu_item_id,
           menu_name: row.menu_name,
           quantity: row.quantity,
@@ -960,17 +968,11 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       }
     }
     
-    // Convert items array to JSON string untuk backward compatibility
-    const orders = Array.from(ordersMap.values()).map(order => ({
-      ...order,
-      items: JSON.stringify(order.items)
-    }));
-
-    console.log(`✅ Orders with items fetched: ${orders.length} orders`);
-    res.json(orders);
+    order.items = JSON.stringify(order.items);
+    res.json(order);
     
   } catch (error) {
-    console.error('Error fetching orders with items:', error);
+    console.error('Error fetching single order:', error);
     res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
   }
 });
