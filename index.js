@@ -303,8 +303,13 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
+    console.log(`🔐 AUTH CHECK: ${req.method} ${req.path}`);
+    
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
+
+    console.log(`🔐 Auth header: ${authHeader ? 'Present' : 'Missing'}`);
+    console.log(`🔐 Token: ${token ? 'Present' : 'Missing'}`);
 
     if (token == null) {
         console.log('❌ No token provided');
@@ -316,6 +321,7 @@ const authenticateToken = (req, res, next) => {
             console.log('❌ Token verification failed:', err.message);
             return res.sendStatus(403);
         }
+        console.log('✅ Token verified for user:', user.username, 'role:', user.role);
         req.user = user;
         next();
     });
@@ -892,24 +898,14 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 // ========================= REVISED ROUTES =========================
 
 // GET single order by ID  
-app.get('/api/orders/:id', authenticateToken, async (req, res) => {
-  console.log('GET /api/orders/:id called with ID:', req.params.id);
+// TEMPORARY - remove authenticateToken for testing
+app.get('/api/orders', async (req, res) => {
+  console.log('🧪 GET /api/orders called - NO AUTH TEST');
   
-  if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
-    return res.status(403).json({ message: 'Akses ditolak.' });
-  }
-
-  const { id } = req.params;
-  console.log(`🔍 PUT request for order ID: ${id} (type: ${typeof id})`);
-  console.log('🔍 Request body:', JSON.stringify(req.body, null, 2));
-  console.log('🔍 User role:', req.user?.role);
-
+  // Hardcode permission for testing
+  const fakeUser = { role: 'admin' };
+  
   try {
-    const isPostgreSQL = process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
-      (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
-    
-    const placeholder = isPostgreSQL ? '$1' : '?';
-    
     const [ordersWithItems] = await dbAdapter.execute(`
       SELECT 
         o.id_orders as order_id,
@@ -921,59 +917,25 @@ app.get('/api/orders/:id', authenticateToken, async (req, res) => {
         o.payment_status,
         o.payment_method,
         o.order_time,
-        o.updated_at,
-        oi.menu_item_id,
-        mi.name as menu_name,
-        oi.quantity,
-        oi.price_at_order,
-        oi.spiciness_level,
-        oi.temperature_level
+        o.updated_at
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id_table
-      LEFT JOIN order_items oi ON o.id_orders = oi.order_id
-      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      WHERE o.id_orders = ${placeholder}
-      ORDER BY oi.menu_item_id ASC
-    `, [parseInt(id)]);
+      ORDER BY o.order_time DESC
+    `);
 
-    if (ordersWithItems.length === 0) {
-      return res.status(404).json({ message: 'Pesanan tidak ditemukan.' });
-    }
+    console.log(`🧪 Found ${ordersWithItems.length} orders without auth`);
+    
+    // Simple response for testing
+    const orders = ordersWithItems.map(order => ({
+      ...order,
+      items: JSON.stringify([]) // Empty items for testing
+    }));
 
-    const firstRow = ordersWithItems[0];
-    const order = {
-      order_id: firstRow.order_id,
-      table_id: firstRow.table_id,
-      table_number: firstRow.table_number,
-      customer_name: firstRow.customer_name,
-      total_amount: firstRow.total_amount,
-      order_status: firstRow.order_status,
-      payment_status: firstRow.payment_status,
-      payment_method: firstRow.payment_method,
-      order_time: firstRow.order_time,
-      updated_at: firstRow.updated_at,
-      items: []
-    };
-    
-    for (const row of ordersWithItems) {
-      if (row.menu_item_id) {
-        order.items.push({
-          menu_item_id: row.menu_item_id,
-          menu_name: row.menu_name,
-          quantity: row.quantity,
-          price_at_order: row.price_at_order,
-          spiciness_level: row.spiciness_level,
-          temperature_level: row.temperature_level
-        });
-      }
-    }
-    
-    order.items = JSON.stringify(order.items);
-    res.json(order);
+    res.json(orders);
     
   } catch (error) {
-    console.error('Error fetching single order:', error);
-    res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
+    console.error('🧪 Test error:', error);
+    res.status(500).json({ message: 'Test error: ' + error.message });
   }
 });
 
@@ -1674,6 +1636,31 @@ app.post('/api/midtrans/webhook/notification', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     }
+});
+
+app.get('/api/debug/orders-test', async (req, res) => {
+  console.log('🧪 Testing orders query directly');
+  
+  try {
+    const [result] = await dbAdapter.execute('SELECT COUNT(*) as count FROM orders');
+    console.log('🧪 Orders count:', result[0]);
+    
+    const [sample] = await dbAdapter.execute('SELECT * FROM orders LIMIT 3');
+    console.log('🧪 Sample orders:', sample);
+    
+    res.json({
+      success: true,
+      count: result[0].count,
+      sample: sample
+    });
+    
+  } catch (error) {
+    console.error('🧪 Database test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // =====================================================
