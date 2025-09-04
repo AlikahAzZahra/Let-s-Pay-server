@@ -303,13 +303,8 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
-    console.log(`🔐 AUTH CHECK: ${req.method} ${req.path}`);
-    
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    console.log(`🔐 Auth header: ${authHeader ? 'Present' : 'Missing'}`);
-    console.log(`🔐 Token: ${token ? 'Present' : 'Missing'}`);
 
     if (token == null) {
         console.log('❌ No token provided');
@@ -321,7 +316,6 @@ const authenticateToken = (req, res, next) => {
             console.log('❌ Token verification failed:', err.message);
             return res.sendStatus(403);
         }
-        console.log('✅ Token verified for user:', user.username, 'role:', user.role);
         req.user = user;
         next();
     });
@@ -896,18 +890,17 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 // ORDER ENDPOINTS - COMPLETELY FIXED VERSION
 // =====================================================
 // ========================= REVISED ROUTES =========================
+
 app.get('/api/orders', authenticateToken, async (req, res) => {
-  console.log('GET /api/orders called - FIXED VERSION');
+  console.log('GET /api/orders called');
   
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
     return res.status(403).json({ message: 'Akses ditolak.' });
   }
 
   try {
-    console.log('🔄 Fetching orders with items using JOIN...');
-    
-    // PERBAIKAN: Single query dengan JOIN untuk ambil semua data sekaligus
-    const [ordersWithItems] = await dbAdapter.execute(`
+    // Query asli yang sudah bekerja
+    const [orders] = await dbAdapter.execute(`
       SELECT 
         o.id_orders as order_id,
         o.table_id,
@@ -918,71 +911,42 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
         o.payment_status,
         o.payment_method,
         o.order_time,
-        o.updated_at,
-        oi.menu_item_id,
-        mi.name as menu_name,
-        oi.quantity,
-        oi.price_at_order,
-        oi.spiciness_level,
-        oi.temperature_level
+        o.updated_at
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id_table
-      LEFT JOIN order_items oi ON o.id_orders = oi.order_id
-      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      ORDER BY o.order_time DESC, o.id_orders DESC, oi.menu_item_id ASC
+      ORDER BY o.order_time DESC
     `);
 
-    console.log(`🔍 Raw query result: ${ordersWithItems.length} rows`);
-
-    // Manual aggregation untuk group items per order
-    const ordersMap = new Map();
-    
-    for (const row of ordersWithItems) {
-      const orderId = row.order_id;
-      
-      if (!ordersMap.has(orderId)) {
-        ordersMap.set(orderId, {
-          order_id: row.order_id,
-          table_id: row.table_id,
-          table_number: row.table_number,
-          customer_name: row.customer_name,
-          total_amount: row.total_amount,
-          order_status: row.order_status,
-          payment_status: row.payment_status,
-          payment_method: row.payment_method,
-          order_time: row.order_time,
-          updated_at: row.updated_at,
-          items: []
-        });
-      }
-      
-      // Add item to order if exists
-      if (row.menu_item_id) {
-        ordersMap.get(orderId).items.push({
-          menu_item_id: row.menu_item_id,
-          menu_name: row.menu_name,
-          quantity: row.quantity,
-          price_at_order: row.price_at_order,
-          spiciness_level: row.spiciness_level,
-          temperature_level: row.temperature_level
-        });
+    // Items query asli yang sudah bekerja
+    for (let order of orders) {
+      try {
+        const [rows] = await dbAdapter.execute(`
+          SELECT 
+            oi.menu_item_id,
+            mi.name as menu_name,
+            oi.quantity,
+            oi.price_at_order,
+            oi.spiciness_level,
+            oi.temperature_level
+          FROM order_items oi
+          JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+          WHERE oi.order_id = $1
+        `, [order.order_id]);
+        
+        // Format yang sama seperti sebelumnya
+        order.items = JSON.stringify(rows || []);
+        
+      } catch (error) {
+        console.error(`Error fetching items for order ${order.order_id}:`, error);
+        order.items = JSON.stringify([]);
       }
     }
-    
-    // Convert to final format
-    const orders = Array.from(ordersMap.values()).map(order => ({
-      ...order,
-      items: JSON.stringify(order.items) // Keep as JSON string for compatibility
-    }));
 
-    console.log(`✅ Processed ${orders.length} orders`);
-    console.log('📋 Sample order items:', orders[0]?.items?.substring(0, 100) + '...');
-    
     res.json(orders);
     
   } catch (error) {
-    console.error('❌ Error fetching orders with items:', error);
-    res.status(500).json({ message: 'Gagal mengambil data pesanan: ' + error.message });
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
   }
 });
 
@@ -1408,43 +1372,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     console.error('Error updating order:', err);
     res.status(500).json({ message: 'Gagal mengupdate pesanan.' });
   }
-  
 });
-
-// Insert order items
-console.log('📝 Starting to insert order items...');
-for (const item of orderItemsForDb) {
-  console.log('📝 Inserting order item:', {
-    order_id: orderId,
-    menu_item_id: item.menu_item_id,
-    quantity: item.quantity,
-    price: item.price_at_order
-  });
-
-  const itemParams = [
-    parseInt(orderId),
-    parseInt(item.menu_item_id),
-    parseInt(item.quantity),
-    parseFloat(item.price_at_order),
-    item.spiciness_level ? String(item.spiciness_level) : null,
-    item.temperature_level ? String(item.temperature_level) : null
-  ];
-
-  if (isPostgreSQL) {
-    await dbAdapter.execute(
-      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES ($1, $2, $3, $4, $5, $6)',
-      itemParams
-    );
-  } else {
-    await dbAdapter.execute(
-      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES (?, ?, ?, ?, ?, ?)',
-      itemParams
-    );
-  }
-
-  console.log(`✅ Order item inserted successfully`);
-}
-console.log('✅ All order items inserted');
 
 // ======================= END REVISED ROUTES =======================
 
@@ -1719,53 +1647,6 @@ app.post('/api/midtrans/webhook/notification', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     }
-});
-
-app.get('/api/debug/orders-test', async (req, res) => {
-  console.log('🧪 Testing orders query directly');
-  
-  try {
-    const [result] = await dbAdapter.execute('SELECT COUNT(*) as count FROM orders');
-    console.log('🧪 Orders count:', result[0]);
-    
-    const [sample] = await dbAdapter.execute('SELECT * FROM orders LIMIT 3');
-    console.log('🧪 Sample orders:', sample);
-    
-    res.json({
-      success: true,
-      count: result[0].count,
-      sample: sample
-    });
-    
-  } catch (error) {
-    console.error('🧪 Database test error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-app.get('/api/debug/order-items/:id', async (req, res) => {
-  try {
-    const orderId = req.params.id;
-    const [items] = await dbAdapter.execute(`
-      SELECT 
-        oi.*,
-        mi.name as menu_name
-      FROM order_items oi
-      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-      WHERE oi.order_id = $1
-    `, [parseInt(orderId)]);
-
-    res.json({
-      order_id: orderId,
-      items: items,
-      count: items.length
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 // =====================================================
