@@ -899,8 +899,8 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
   }
 
   try {
-    // Query asli yang sudah bekerja
-    const [orders] = await dbAdapter.execute(`
+    // PERBAIKAN: Single query dengan JOIN dan manual aggregation
+    const [ordersWithItems] = await dbAdapter.execute(`
       SELECT 
         o.id_orders as order_id,
         o.table_id,
@@ -911,41 +911,66 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
         o.payment_status,
         o.payment_method,
         o.order_time,
-        o.updated_at
+        o.updated_at,
+        oi.menu_item_id,
+        mi.name as menu_name,
+        oi.quantity,
+        oi.price_at_order,
+        oi.spiciness_level,
+        oi.temperature_level
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id_table
-      ORDER BY o.order_time DESC
+      LEFT JOIN order_items oi ON o.id_orders = oi.order_id
+      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+      ORDER BY o.order_time DESC, oi.menu_item_id ASC
     `);
 
-    // Items query asli yang sudah bekerja
-    for (let order of orders) {
-      try {
-        const [rows] = await dbAdapter.execute(`
-          SELECT 
-            oi.menu_item_id,
-            mi.name as menu_name,
-            oi.quantity,
-            oi.price_at_order,
-            oi.spiciness_level,
-            oi.temperature_level
-          FROM order_items oi
-          JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
-          WHERE oi.order_id = $1
-        `, [order.order_id]);
-        
-        // Format yang sama seperti sebelumnya
-        order.items = JSON.stringify(rows || []);
-        
-      } catch (error) {
-        console.error(`Error fetching items for order ${order.order_id}:`, error);
-        order.items = JSON.stringify([]);
+    // Manual aggregation untuk compatibility dengan semua database
+    const ordersMap = new Map();
+    
+    for (const row of ordersWithItems) {
+      const orderId = row.order_id;
+      
+      if (!ordersMap.has(orderId)) {
+        ordersMap.set(orderId, {
+          order_id: row.order_id,
+          table_id: row.table_id,
+          table_number: row.table_number,
+          customer_name: row.customer_name,
+          total_amount: row.total_amount,
+          order_status: row.order_status,
+          payment_status: row.payment_status,
+          payment_method: row.payment_method,
+          order_time: row.order_time,
+          updated_at: row.updated_at,
+          items: []
+        });
+      }
+      
+      // Add item to order if exists
+      if (row.menu_item_id) {
+        ordersMap.get(orderId).items.push({
+          menu_item_id: row.menu_item_id,
+          menu_name: row.menu_name,
+          quantity: row.quantity,
+          price_at_order: row.price_at_order,
+          spiciness_level: row.spiciness_level,
+          temperature_level: row.temperature_level
+        });
       }
     }
+    
+    // Convert items array to JSON string untuk backward compatibility
+    const orders = Array.from(ordersMap.values()).map(order => ({
+      ...order,
+      items: JSON.stringify(order.items)
+    }));
 
+    console.log(`✅ Orders with items fetched: ${orders.length} orders`);
     res.json(orders);
     
   } catch (error) {
-    console.error('Error fetching orders:', error);
+    console.error('Error fetching orders with items:', error);
     res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
   }
 });
