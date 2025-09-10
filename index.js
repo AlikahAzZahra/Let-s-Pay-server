@@ -892,19 +892,23 @@ app.get('/api/tables', authenticateToken, async (req, res) => {
 // ========================= REVISED ROUTES =========================
 
 // GET /api/orders — FIX: konsisten execute + placeholder per DB
+// PERBAIKAN untuk GET /api/orders di server/index.js
+// Ganti dengan versi yang lebih robust
+
 app.get('/api/orders', authenticateToken, async (req, res) => {
-  console.log('📋 GET /api/orders called');
+  console.log('📋 GET /api/orders called - ENHANCED DEBUG VERSION');
 
   if (req.user.role !== 'admin' && req.user.role !== 'cashier') {
     return res.status(403).json({ message: 'Akses ditolak. Hanya admin atau kasir yang bisa melihat pesanan.' });
   }
 
-  // REVISION: deteksi jenis DB untuk placeholder
   const isPostgreSQL =
     process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
     (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
 
   try {
+    console.log('🔍 Fetching orders with enhanced error handling...');
+    
     // Get all orders with table info
     const [orders] = await dbAdapter.execute(`
       SELECT 
@@ -926,9 +930,12 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       ORDER BY o.order_time DESC
     `);
 
-    // Get order items
+    console.log(`✅ Found ${orders.length} orders`);
+
+    // Enhanced order items fetching with better error handling
     const itemSqlPG = `
       SELECT 
+        oi.order_id,
         oi.menu_item_id,
         mi.name as menu_name,
         oi.quantity,
@@ -936,11 +943,14 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
         oi.spiciness_level,
         oi.temperature_level
       FROM order_items oi
-      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
       WHERE oi.order_id = $1
+      ORDER BY oi.menu_item_id
     `;
+    
     const itemSqlMy = `
       SELECT 
+        oi.order_id,
         oi.menu_item_id,
         mi.name as menu_name,
         oi.quantity,
@@ -948,29 +958,94 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
         oi.spiciness_level,
         oi.temperature_level
       FROM order_items oi
-      JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+      LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
       WHERE oi.order_id = ?
+      ORDER BY oi.menu_item_id
     `;
 
-    for (let order of orders) {
+    // Process each order individually with detailed logging
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
+      console.log(`🔍 Processing order ${i + 1}/${orders.length}: ID ${order.order_id}`);
+      
       try {
         const sql = isPostgreSQL ? itemSqlPG : itemSqlMy;
         const [rows] = await dbAdapter.execute(sql, [order.order_id]);
-        // FE expect string for items
-        order.items = JSON.stringify(rows ?? []);
-        console.log(`Order ${order.order_id} items:`, rows);
-      } catch (error) {
-        console.error(`Error fetching items for order ${order.order_id}:`, error);
+        
+        console.log(`  📦 Found ${rows.length} items for order ${order.order_id}`);
+        
+        // Debug each item
+        if (rows.length > 0) {
+          rows.forEach((item, itemIndex) => {
+            console.log(`    Item ${itemIndex + 1}: ${item.menu_name || 'Unknown'} x${item.quantity}`);
+          });
+        } else {
+          console.log(`  ⚠️ No items found for order ${order.order_id}`);
+          
+          // Additional debug: check if order_items exist for this order
+          const [debugItems] = await dbAdapter.execute(
+            isPostgreSQL ? 'SELECT COUNT(*) as count FROM order_items WHERE order_id = $1' : 'SELECT COUNT(*) as count FROM order_items WHERE order_id = ?',
+            [order.order_id]
+          );
+          console.log(`    🔍 Debug: order_items count in DB: ${debugItems[0].count}`);
+        }
+        
+        // Convert to JSON string for frontend
+        order.items = JSON.stringify(rows || []);
+        
+      } catch (itemError) {
+        console.error(`❌ Error fetching items for order ${order.order_id}:`, itemError);
+        console.error(`   Query: ${isPostgreSQL ? itemSqlPG : itemSqlMy}`);
+        console.error(`   Params: [${order.order_id}]`);
+        
+        // Set empty array on error but don't fail the whole request
         order.items = JSON.stringify([]);
       }
     }
 
-    console.log(`✅ Orders fetched: ${orders.length} orders`);
+    console.log(`✅ Successfully processed ${orders.length} orders`);
+    
+    // Add summary info for debugging
+    const summary = {
+      total_orders: orders.length,
+      orders_with_items: orders.filter(o => {
+        try {
+          const items = JSON.parse(o.items);
+          return items.length > 0;
+        } catch {
+          return false;
+        }
+      }).length,
+      orders_without_items: orders.filter(o => {
+        try {
+          const items = JSON.parse(o.items);
+          return items.length === 0;
+        } catch {
+          return true;
+        }
+      }).length
+    };
+    
+    console.log('📊 Orders summary:', summary);
+    
     res.json(orders);
 
   } catch (error) {
-    console.error('❌ Error fetching orders:', error);
-    res.status(500).json({ message: 'Gagal mengambil data pesanan.' });
+    console.error('❌ Critical error in GET /api/orders:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    
+    res.status(500).json({ 
+      message: 'Gagal mengambil data pesanan.',
+      error: error.message,
+      debug_info: {
+        database_type: isPostgreSQL ? 'PostgreSQL' : 'MySQL',
+        timestamp: new Date().toISOString()
+      }
+    });
   }
 });
 
@@ -1545,6 +1620,179 @@ app.get('/api/debug/menu/:id', authenticateToken, async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Tambahkan endpoint debug di server/index.js untuk investigasi mendalam
+
+app.get('/api/debug/order/:orderId', authenticateToken, async (req, res) => {
+    console.log('🔍 DEBUG ORDER ENDPOINT HIT');
+    
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ message: 'Access denied' });
+    }
+    
+    const { orderId } = req.params;
+    console.log('Debugging order ID:', orderId);
+    
+    const isPostgreSQL =
+        process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'postgresql' ||
+        (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('postgres'));
+    
+    try {
+        const debugInfo = {};
+        
+        // 1. Check if order exists
+        console.log('Step 1: Check order existence...');
+        const [orderCheck] = await dbAdapter.execute(
+            'SELECT * FROM orders WHERE id_orders = ?',
+            [orderId]
+        );
+        debugInfo.order_exists = orderCheck.length > 0;
+        debugInfo.order_data = orderCheck[0] || null;
+        console.log('Order exists:', debugInfo.order_exists);
+        
+        if (!debugInfo.order_exists) {
+            return res.json({
+                success: false,
+                message: 'Order not found',
+                debug: debugInfo
+            });
+        }
+        
+        // 2. Check order_items table directly
+        console.log('Step 2: Check order_items...');
+        const [orderItemsRaw] = await dbAdapter.execute(
+            'SELECT * FROM order_items WHERE order_id = ?',
+            [orderId]
+        );
+        debugInfo.order_items_raw = orderItemsRaw;
+        debugInfo.order_items_count = orderItemsRaw.length;
+        console.log('Raw order items count:', debugInfo.order_items_count);
+        
+        // 3. Check with JOIN (like the main query)
+        console.log('Step 3: Check with JOIN...');
+        const joinSql = isPostgreSQL ? `
+            SELECT 
+                oi.order_id,
+                oi.menu_item_id,
+                mi.name as menu_name,
+                oi.quantity,
+                oi.price_at_order,
+                oi.spiciness_level,
+                oi.temperature_level,
+                mi.id_menu as menu_exists
+            FROM order_items oi
+            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+            WHERE oi.order_id = $1
+        ` : `
+            SELECT 
+                oi.order_id,
+                oi.menu_item_id,
+                mi.name as menu_name,
+                oi.quantity,
+                oi.price_at_order,
+                oi.spiciness_level,
+                oi.temperature_level,
+                mi.id_menu as menu_exists
+            FROM order_items oi
+            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+            WHERE oi.order_id = ?
+        `;
+        
+        const [joinResult] = await dbAdapter.execute(joinSql, [orderId]);
+        debugInfo.join_result = joinResult;
+        debugInfo.join_count = joinResult.length;
+        console.log('JOIN result count:', debugInfo.join_count);
+        
+        // 4. Check for orphaned menu items
+        console.log('Step 4: Check for orphaned references...');
+        const orphanedItems = orderItemsRaw.filter(item => {
+            const hasMatch = joinResult.some(joined => joined.menu_item_id === item.menu_item_id);
+            return !hasMatch;
+        });
+        debugInfo.orphaned_items = orphanedItems;
+        debugInfo.orphaned_count = orphanedItems.length;
+        
+        // 5. Test the exact query used in main endpoint
+        console.log('Step 5: Test main endpoint query...');
+        const mainQuerySql = isPostgreSQL ? `
+            SELECT 
+                oi.menu_item_id,
+                mi.name as menu_name,
+                oi.quantity,
+                oi.price_at_order,
+                oi.spiciness_level,
+                oi.temperature_level
+            FROM order_items oi
+            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+            WHERE oi.order_id = $1
+            ORDER BY oi.menu_item_id
+        ` : `
+            SELECT 
+                oi.menu_item_id,
+                mi.name as menu_name,
+                oi.quantity,
+                oi.price_at_order,
+                oi.spiciness_level,
+                oi.temperature_level
+            FROM order_items oi
+            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id_menu
+            WHERE oi.order_id = ?
+            ORDER BY oi.menu_item_id
+        `;
+        
+        const [mainQueryResult] = await dbAdapter.execute(mainQuerySql, [orderId]);
+        debugInfo.main_query_result = mainQueryResult;
+        debugInfo.main_query_count = mainQueryResult.length;
+        debugInfo.main_query_json = JSON.stringify(mainQueryResult);
+        
+        // 6. Database schema check
+        console.log('Step 6: Schema validation...');
+        try {
+            const [schemaCheck] = await dbAdapter.execute(`
+                SELECT column_name, data_type, is_nullable 
+                FROM information_schema.columns 
+                WHERE table_name = 'order_items'
+                ORDER BY ordinal_position
+            `);
+            debugInfo.order_items_schema = schemaCheck;
+        } catch (schemaError) {
+            console.log('Schema check failed (probably MySQL), trying DESCRIBE...');
+            try {
+                const [describeResult] = await dbAdapter.execute('DESCRIBE order_items');
+                debugInfo.order_items_schema = describeResult;
+            } catch (descError) {
+                debugInfo.order_items_schema = { error: 'Could not get schema' };
+            }
+        }
+        
+        // 7. Summary and recommendations
+        debugInfo.summary = {
+            order_exists: debugInfo.order_exists,
+            has_raw_items: debugInfo.order_items_count > 0,
+            has_joined_items: debugInfo.join_count > 0,
+            has_main_query_items: debugInfo.main_query_count > 0,
+            has_orphaned_items: debugInfo.orphaned_count > 0,
+            database_type: isPostgreSQL ? 'PostgreSQL' : 'MySQL'
+        };
+        
+        console.log('Debug summary:', debugInfo.summary);
+        
+        res.json({
+            success: true,
+            message: 'Debug information collected',
+            order_id: orderId,
+            debug: debugInfo
+        });
+        
+    } catch (error) {
+        console.error('Debug endpoint error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            stack: error.stack
+        });
     }
 });
 
