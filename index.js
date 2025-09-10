@@ -1488,6 +1488,43 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   
 });
 
+// Insert order items
+console.log('📝 Starting to insert order items...');
+for (const item of orderItemsForDb) {
+  console.log('📝 Inserting order item:', {
+    order_id: orderId,
+    menu_item_id: item.menu_item_id,
+    quantity: item.quantity,
+    price: item.price_at_order
+  });
+
+  const itemParams = [
+    parseInt(orderId),
+    parseInt(item.menu_item_id),
+    parseInt(item.quantity),
+    parseFloat(item.price_at_order),
+    item.spiciness_level ? String(item.spiciness_level) : null,
+    item.temperature_level ? String(item.temperature_level) : null
+  ];
+
+  if (isPostgreSQL) {
+    await dbAdapter.execute(
+      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES ($1, $2, $3, $4, $5, $6)',
+      itemParams
+    );
+  } else {
+    await dbAdapter.execute(
+      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES (?, ?, ?, ?, ?, ?)',
+      itemParams
+    );
+  }
+
+  console.log(`✅ Order item inserted successfully`);
+}
+console.log('✅ All order items inserted');
+
+// DELETE EVERYTHING ABOVE THIS LINE
+
 // ======================= END REVISED ROUTES =======================
 
 
@@ -1850,6 +1887,7 @@ app.options('/api/cors-test', (req, res) => {
 // =====================================================
 // START SERVER
 // =====================================================
+// At the very end of index.js:
 if (process.env.VERCEL) {
   module.exports = app;
 } else {
