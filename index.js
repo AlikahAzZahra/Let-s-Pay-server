@@ -1488,41 +1488,6 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   
 });
 
-// Insert order items
-console.log('📝 Starting to insert order items...');
-for (const item of orderItemsForDb) {
-  console.log('📝 Inserting order item:', {
-    order_id: orderId,
-    menu_item_id: item.menu_item_id,
-    quantity: item.quantity,
-    price: item.price_at_order
-  });
-
-  const itemParams = [
-    parseInt(orderId),
-    parseInt(item.menu_item_id),
-    parseInt(item.quantity),
-    parseFloat(item.price_at_order),
-    item.spiciness_level ? String(item.spiciness_level) : null,
-    item.temperature_level ? String(item.temperature_level) : null
-  ];
-
-  if (isPostgreSQL) {
-    await dbAdapter.execute(
-      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES ($1, $2, $3, $4, $5, $6)',
-      itemParams
-    );
-  } else {
-    await dbAdapter.execute(
-      'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_order, spiciness_level, temperature_level) VALUES (?, ?, ?, ?, ?, ?)',
-      itemParams
-    );
-  }
-
-  console.log(`✅ Order item inserted successfully`);
-}
-console.log('✅ All order items inserted');
-
 // ======================= END REVISED ROUTES =======================
 
 
@@ -1889,38 +1854,6 @@ if (process.env.VERCEL) {
   module.exports = app;
 } else {
     app.listen(PORT, () => {
-        console.log('='.repeat(60));
-        console.log('🚀 SERVER STARTED SUCCESSFULLY! (COMPLETELY FIXED VERSION)');
-        console.log('='.repeat(60));
-        console.log(`🌐 Server running at: http://localhost:${PORT}`);
-        console.log(`🔑 JWT Secret configured: ${JWT_SECRET ? 'YES' : 'NO'}`);
-        console.log(`💳 Midtrans Mode: ${process.env.MIDTRANS_IS_PRODUCTION === 'true' ? 'PRODUCTION' : 'SANDBOX'}`);
-        console.log(`📊 Database Type: ${process.env.DB_TYPE || 'mysql'}`);
-        console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-        console.log('='.repeat(60));
-        console.log('📋 Available Endpoints:');
-        console.log('  • POST /api/login');
-        console.log('  • GET  /api/health');
-        console.log('  • GET  /api/debug/test-simple');
-        console.log('  • GET  /api/debug/schema'); 
-        console.log('  • POST /api/debug/order');
-        console.log('  • GET  /api/menu (boolean-safe)');
-        console.log('  • PATCH /api/menu/:id/availability (boolean-safe)');
-        console.log('  • GET  /api/orders');
-        console.log('  • POST /api/orders (COMPLETELY FIXED - safe table lookup)');
-        console.log('  • GET  /api/tables'); 
-        console.log('  • GET  /api/reports/sales');
-        console.log('  • GET  /api/debug/menu/:id (boolean-safe)');
-        console.log('='.repeat(60));
-        console.log('🔧 KEY FIXES APPLIED:');
-        console.log('  ✅ CORS: allowedHeaders termasuk Expires (preflight tidak diblok)');
-        console.log('  ✅ Safe table lookup function with string handling');
-        console.log('  ✅ Boolean-safe menu availability checks');
-        console.log('  ✅ Type-safe order creation');
-        console.log('  ✅ Payment status secured (auth + role check)');
-        console.log('  ✅ PostgreSQL/MySQL compatibility di endpoints penting');
-        console.log('  ✅ Enhanced error logging');
-        console.log('  ✅ Image via link only (image_link), no device uploads');
-        console.log('='.repeat(60));
+        console.log('Server running at:', PORT);
     });
 }
