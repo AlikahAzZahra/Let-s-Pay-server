@@ -259,21 +259,39 @@ const ALLOWED_ORIGINS = new Set([
   'http://localhost:8080',
 ]);
 
-// izinkan juga preview domain vercel FE: https://let-s-pay-jm5o-xxx.vercel.app
+// Allow preview domains
 const isAllowedOrigin = (origin) => {
-  if (!origin) return true; // curl/mobile/server-to-server (tanpa Origin)
+  if (!origin) return true; 
   if (ALLOWED_ORIGINS.has(origin)) return true;
   return /^https:\/\/let-s-pay-jm5o-[\w-]+\.vercel\.app$/.test(origin);
+};
+
+// MANUAL CORS HEADERS FUNCTION - CRITICAL FOR VERCEL
+const setCorsHeaders = (res, origin = '*') => {
+  const allowedOrigin = origin === '*' ? '*' : (isAllowedOrigin(origin) ? origin : 'null');
+  
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 
+    'Origin,X-Requested-With,Content-Type,Accept,Authorization,Cache-Control,Pragma,Expires'
+  );
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+  res.setHeader('Vary', 'Origin');
 };
 
 // ⚠️ FIX PENTING: tambahkan 'Expires' agar preflight yang mengirim header ini tidak ditolak
 const corsOptions = {
   origin(origin, callback) {
-    if (isAllowedOrigin(origin)) return callback(null, true);
-    console.log('CORS blocked origin:', origin);
+    console.log('🔍 CORS origin check:', origin);
+    if (isAllowedOrigin(origin)) {
+      console.log('✅ Origin allowed:', origin);
+      return callback(null, true);
+    }
+    console.log('❌ CORS blocked origin:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
-  credentials: true, // butuh echo ACAO per-origin (tidak boleh '*')
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
     'Origin',
@@ -283,23 +301,62 @@ const corsOptions = {
     'Authorization',
     'Cache-Control',
     'Pragma',
-    'Expires' // ← FIX: tambahkan ini
+    'Expires'
   ],
-  optionsSuccessStatus: 204,
+  optionsSuccessStatus: 200, // Changed from 204 to 200
+  preflightContinue: false, // End preflight here
 };
 
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
 app.use((req, res, next) => {
-  // bantu cache vary Origin biar CDN/proxy tidak reuse salah
-  res.setHeader('Vary', 'Origin');
+  const origin = req.headers.origin;
+  
+  // Always set CORS headers
+  setCorsHeaders(res, origin);
+  
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    console.log('🔄 Handling OPTIONS preflight request for:', req.path);
+    console.log('🔄 Origin:', origin);
+    console.log('🔄 Headers set successfully');
+    return res.status(200).end();
+  }
+  
   next();
 });
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+app.options('*', (req, res) => {
+  console.log('🔄 Explicit OPTIONS handler for:', req.path);
+  setCorsHeaders(res, req.headers.origin);
+  res.status(200).end();
+});
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 // ⛔ Static '/uploads' dihapus karena tidak lagi menyimpan file lokal
+
+app.use((err, req, res, next) => {
+  console.error('❌ Server error:', err.message);
+  
+  // Ensure CORS headers are set even for errors
+  setCorsHeaders(res, req.headers.origin);
+  
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ 
+      error: 'CORS Error', 
+      message: 'Origin not allowed' 
+    });
+  }
+  
+  res.status(500).json({ 
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  });
+});
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -332,11 +389,14 @@ const authenticateToken = (req, res, next) => {
 // =====================================================
 app.get('/api/health', (req, res) => {
     console.log('🏥 Health check requested');
+    setCorsHeaders(res, req.headers.origin);
     res.json({
         status: 'OK',
         timestamp: new Date().toISOString(),
         database: dbAdapter ? 'Connected' : 'Disconnected',
         port: PORT,
+        cors: 'Enabled',
+        origin: req.headers.origin || 'No origin header',
         midtrans: {
             server_key_configured: !!process.env.MIDTRANS_SERVER_KEY,
             client_key_configured: !!process.env.MIDTRANS_CLIENT_KEY,
@@ -344,6 +404,23 @@ app.get('/api/health', (req, res) => {
         }
     });
 });
+
+if (process.env.VERCEL) {
+    console.log('🚀 Running on Vercel Serverless');
+    module.exports = app;
+} else {
+    app.listen(PORT, () => {
+        console.log('='.repeat(60));
+        console.log('🚀 SERVER STARTED WITH ENHANCED CORS SUPPORT');
+        console.log('='.repeat(60));
+        console.log(`🌐 Server running at: http://localhost:${PORT}`);
+        console.log(`🔒 CORS enabled for origins:`, Array.from(ALLOWED_ORIGINS));
+        console.log(`📋 Manual CORS headers: ENABLED`);
+        console.log(`🔄 OPTIONS preflight: HANDLED`);
+        console.log('='.repeat(60));
+    });
+}
+
 
 // =====================================================
 // DEBUG ENDPOINTS
@@ -1766,6 +1843,43 @@ app.get('/api/debug/order-items/:id', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// Add this debug endpoint to your server index.js
+
+app.get('/api/cors-test', (req, res) => {
+    console.log('🔍 CORS Test endpoint hit');
+    console.log('Headers received:', req.headers);
+    console.log('Origin:', req.headers.origin);
+    console.log('Method:', req.method);
+    
+    // Manually set CORS headers
+    setCorsHeaders(res, req.headers.origin);
+    
+    res.json({
+        success: true,
+        message: 'CORS is working!',
+        origin: req.headers.origin || 'No origin header',
+        method: req.method,
+        timestamp: new Date().toISOString(),
+        headers_sent: {
+            'Access-Control-Allow-Origin': res.getHeader('Access-Control-Allow-Origin'),
+            'Access-Control-Allow-Methods': res.getHeader('Access-Control-Allow-Methods'),
+            'Access-Control-Allow-Headers': res.getHeader('Access-Control-Allow-Headers'),
+            'Access-Control-Allow-Credentials': res.getHeader('Access-Control-Allow-Credentials'),
+        }
+    });
+});
+
+// Add preflight test
+app.options('/api/cors-test', (req, res) => {
+    console.log('🔄 CORS Test OPTIONS preflight');
+    console.log('Origin:', req.headers.origin);
+    console.log('Access-Control-Request-Method:', req.headers['access-control-request-method']);
+    console.log('Access-Control-Request-Headers:', req.headers['access-control-request-headers']);
+    
+    setCorsHeaders(res, req.headers.origin);
+    res.status(200).end();
 });
 
 // =====================================================
